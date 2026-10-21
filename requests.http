@@ -1,0 +1,50 @@
+### ==============================================================================
+### Pruebas de API Gateway con YARP, Redis y Microservicio CatalogService
+### ==============================================================================
+@baseUrl = http://localhost:5000
+
+### 1. Estado del API Gateway (Información general)
+GET {{baseUrl}}/
+Accept: application/json
+
+### 2. Health Check del API Gateway
+GET {{baseUrl}}/healthz
+Accept: application/json
+
+### 3. Enrutamiento YARP: Obtener todos los productos del CatalogService
+# Demuestra cómo /catalog/products se transforma en /api/products en el microservicio
+GET {{baseUrl}}/catalog/products
+Accept: application/json
+
+### 4. Enrutamiento YARP con Query Params: Filtrar por Categoría
+GET {{baseUrl}}/catalog/products?category=Computers
+Accept: application/json
+
+### 5. Enrutamiento YARP: Obtener producto por ID
+GET {{baseUrl}}/catalog/products/11111111-1111-1111-1111-111111111111
+Accept: application/json
+
+### 6. Enrutamiento YARP: Crear un nuevo producto (POST)
+POST {{baseUrl}}/catalog/products
+Content-Type: application/json
+
+{
+  "name": "iPad Pro 13 M4",
+  "description": "Ultra Retina XDR display, 256GB SSD",
+  "price": 1299.00,
+  "category": "Tablets",
+  "stock": 10
+}
+
+### 7. Trazabilidad con Correlation ID personalizado
+# Si envías tu propio X-Correlation-Id, el Gateway y el Microservicio lo preservan
+GET {{baseUrl}}/catalog/products
+X-Correlation-Id: custom-trace-client-xyz-777
+Accept: application/json
+
+### 8. Prueba de Rate Limiting Distribuido (Sliding Window Counter en Redis)
+# El límite configurado es de 5 peticiones cada 10 segundos por cliente.
+# Ejecuta esta petición 6 veces seguidas rápidamente para recibir:
+# HTTP/1.1 429 Too Many Requests con la cabecera Retry-After
+GET {{baseUrl}}/catalog/products
+Accept: application/json

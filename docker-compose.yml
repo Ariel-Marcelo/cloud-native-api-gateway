@@ -1,0 +1,59 @@
+services:
+  # Servidor Redis en memoria para almacenamiento atómico del Rate Limiting distribuido
+  redis:
+    image: redis:7-alpine
+    container_name: apigateway-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - gateway-network
+
+  # Microservicio backend de catálogo (aislado internamente, sin puerto público en el host)
+  catalog-service:
+    image: catalog-service:latest
+    container_name: apigateway-catalog-service
+    build:
+      context: .
+      dockerfile: src/Services/CatalogService/Dockerfile
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_HTTP_PORTS=8080
+    networks:
+      - gateway-network
+
+  # API Gateway con YARP (Punto único de entrada público expuesto en el puerto 5000)
+  api-gateway:
+    image: api-gateway:latest
+    container_name: apigateway-proxy
+    build:
+      context: .
+      dockerfile: src/Gateway/ApiGateway/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_HTTP_PORTS=8080
+      - ConnectionStrings__Redis=redis:6379
+      - ReverseProxy__Clusters__catalog-cluster__Destinations__catalog-service-node__Address=http://catalog-service:8080
+      - RateLimiting__Enabled=true
+      - RateLimiting__PermitLimit=5
+      - RateLimiting__WindowSeconds=10
+    depends_on:
+      redis:
+        condition: service_healthy
+      catalog-service:
+        condition: service_started
+    networks:
+      - gateway-network
+
+networks:
+  gateway-network:
+    driver: bridge
