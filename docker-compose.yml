@@ -28,6 +28,19 @@ services:
     networks:
       - gateway-network
 
+  catalog-service-2:
+    image: catalog-service:latest
+    container_name: apigateway-catalog-service-2
+    build:
+      context: .
+      dockerfile: src/Services/CatalogService/Dockerfile
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_HTTP_PORTS=8082
+    networks:
+      - gateway-network
+
   orders-service:
     image: orders-service:latest
     container_name: apigateway-orders-service
