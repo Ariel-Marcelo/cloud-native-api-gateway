@@ -24,7 +24,7 @@ public class HealthController {
         } catch (UnknownHostException e) {
             hostName = "UNKNOWN_HOST";
         }
-        var result = new HealthInform("Healthy", "OrdersService", hostName, Instant.now());
+        var result = new HealthInform("Healthy", "AuthService", hostName, Instant.now());
         return ResponseEntity.ok(result);
     }
 

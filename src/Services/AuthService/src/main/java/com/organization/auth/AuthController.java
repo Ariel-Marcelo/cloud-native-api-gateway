@@ -13,8 +13,8 @@ import org.springframework.web.bind.annotation.*;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
-import java.sql.Date;
 import java.time.Instant;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -24,7 +24,7 @@ import java.util.Map;
 public class AuthController {
 
     private final JwtConfig jwtConfig;
-    private final Map<String, UserInfo> secretKeyMap = new HashMap<>();
+    private final Map<String, UserInfo> usersByUsername = new HashMap<>();
 
     public AuthController(JwtConfig jwtConfig) {
         this.jwtConfig = jwtConfig;
@@ -32,20 +32,20 @@ public class AuthController {
 
     @PostConstruct
     public void init() {
-        secretKeyMap.put("hash1", new UserInfo("1","Juan", "Admin", "Premium"));
-        secretKeyMap.put("hash2", new UserInfo("2","Maria", "Admin", "Premium"));
+        usersByUsername.put("Juan", new UserInfo("1", "Juan", "hash1", "Admin", "Premium"));
+        usersByUsername.put("Maria", new UserInfo("2", "Maria", "hash2", "Customer", "Free"));
     }
 
-    @PostMapping
+    @PostMapping("/login")
     public ResponseEntity<String> auth(@RequestBody LoginRequest req) {
-        log.info("Authentication Init");
-        UserInfo userInfo = secretKeyMap.get(req.password);
-        if (userInfo == null || userInfo.role.isBlank() || userInfo.tier.isBlank() ) {
-            log.error("Authentication Failed '{}' ",req);
+        log.info("Authentication Init for user '{}'", req.getUsername());
+        UserInfo userInfo = usersByUsername.get(req.getUsername());
+        if (userInfo == null || !userInfo.getPassword().equals(req.getPassword()) || userInfo.role.isBlank() || userInfo.tier.isBlank()) {
+            log.warn("Authentication Failed for user '{}'", req.getUsername());
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        log.info("Generating JWT Token");
+        log.info("Generating JWT Token for user '{}'", userInfo.getUsername());
         String role = userInfo.role;
         String tier = userInfo.tier;
 
@@ -65,7 +65,7 @@ public class AuthController {
                     .signWith(key, Jwts.SIG.HS256).compact());
 
         } catch (Exception e) {
-            log.error("Authentication Failed Exception '{}' ",req, e);
+            log.error("Authentication Failed Exception for user '{}'", req.getUsername(), e);
             return ResponseEntity.badRequest().build();
         }
     }
@@ -76,6 +76,7 @@ public class AuthController {
     public static class UserInfo {
         public String id;
         private String username;
+        private String password;
         private String role;
         private String tier;
     }

@@ -29,10 +29,9 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
         response.addHeader(correlationIdHeader, correlationId);
 
         try {
-            filterChain.doFilter(request,response);
-        } catch (Exception ex) {
+            filterChain.doFilter(request, response);
+        } finally {
             MDC.remove(MDC_KEY);
         }
-
     }
 }
