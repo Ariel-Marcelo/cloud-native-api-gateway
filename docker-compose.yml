@@ -81,8 +81,6 @@ services:
       - ConnectionStrings__Redis=redis:6379
       - ReverseProxy__Clusters__catalog-cluster__Destinations__catalog-service-node__Address=http://catalog-service:8080
       - RateLimiting__Enabled=true
-      - RateLimiting__PermitLimit=5
-      - RateLimiting__WindowSeconds=10
     depends_on:
       redis:
         condition: service_healthy
