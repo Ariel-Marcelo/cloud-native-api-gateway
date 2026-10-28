@@ -32,11 +32,7 @@ public class CorrelationIdMiddleware
         });
 
         // Crear un scope de logging estructurado para que todos los logs de la petición incluyan el CorrelationId
-        using (_logger.BeginScope(new Dictionary<string, object>
-        {
-            ["CorrelationId"] = correlationId,
-            ["TraceId"] = context.TraceIdentifier
-        }))
+        using (_logger.BeginScope("CorrelationId:{CorrelationId}", correlationId))
         {
             _logger.LogInformation("Solicitud entrante: {Method} {Path}", context.Request.Method, context.Request.Path);
             await _next(context);

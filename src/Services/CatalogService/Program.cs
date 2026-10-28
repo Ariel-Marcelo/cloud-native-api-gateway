@@ -1,3 +1,4 @@
+using CatalogService.Middlewares;
 using CatalogService.Models;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -9,15 +10,7 @@ builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
-// Middleware para capturar y propagar Correlation ID en las respuestas del microservicio
-app.Use(async (context, next) =>
-{
-    if (context.Request.Headers.TryGetValue("X-Correlation-Id", out var correlationId))
-    {
-        context.Response.Headers["X-Correlation-Id"] = correlationId;
-    }
-    await next();
-});
+app.UseMiddleware<CorrelationIdMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -45,8 +38,7 @@ app.MapGet("/healthz", () => Results.Ok(new
 // Endpoints REST de Productos
 app.MapGet("/api/products", (string? category, ILogger<Program> logger, HttpContext ctx) =>
 {
-    var correlationId = ctx.Request.Headers["X-Correlation-Id"].FirstOrDefault() ?? "none";
-    logger.LogInformation("[CatalogService] Obteniendo productos. CorrelationId: {CorrelationId}, Categoría: {Category}", correlationId, category);
+    logger.LogInformation("Obteniendo productos");
 
     var result = string.IsNullOrWhiteSpace(category) 
         ? products 
@@ -59,8 +51,7 @@ app.MapGet("/api/products", (string? category, ILogger<Program> logger, HttpCont
 
 app.MapGet("/api/products/{id:guid}", (Guid id, ILogger<Program> logger, HttpContext ctx) =>
 {
-    var correlationId = ctx.Request.Headers["X-Correlation-Id"].FirstOrDefault() ?? "none";
-    logger.LogInformation("[CatalogService] Buscando producto {Id}. CorrelationId: {CorrelationId}", id, correlationId);
+    logger.LogInformation("Buscando producto {Id}", id);
 
     var product = products.FirstOrDefault(p => p.Id == id);
     return product is not null ? Results.Ok(product) : Results.NotFound(new { Message = $"Producto con Id {id} no encontrado." });
@@ -70,8 +61,7 @@ app.MapGet("/api/products/{id:guid}", (Guid id, ILogger<Program> logger, HttpCon
 
 app.MapPost("/api/products", (Product product, ILogger<Program> logger, HttpContext ctx) =>
 {
-    var correlationId = ctx.Request.Headers["X-Correlation-Id"].FirstOrDefault() ?? "none";
-    logger.LogInformation("[CatalogService] Creando nuevo producto '{Name}'. CorrelationId: {CorrelationId}", product.Name, correlationId);
+    logger.LogInformation("[CatalogService] Creando nuevo producto '{Name}'", product.Name);
 
     product.Id = Guid.NewGuid();
     product.CreatedAt = DateTime.UtcNow;
