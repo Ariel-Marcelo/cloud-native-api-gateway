@@ -3,6 +3,7 @@ using ApiGateway.Configuration;
 using ApiGateway.Middlewares;
 using ApiGateway.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
 using Yarp.ReverseProxy.Transforms;
@@ -24,6 +25,11 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(redisConfiguration));
 
 builder.Services.AddSingleton<IRedisRateLimiterService, RedisRateLimiterService>();
+
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+});
 
 // Configuración de YARP Reverse Proxy
 builder.Services.AddReverseProxy()
@@ -84,6 +90,7 @@ builder.Services.AddAuthorization();
 var app = builder.Build();
 
 // 1. Middleware de Correlación y Trazabilidad (primero en la canalización)
+app.UseForwardedHeaders();
 app.UseMiddleware<CorrelationIdMiddleware>();
 
 // 2. Authentication

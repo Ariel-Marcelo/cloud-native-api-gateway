@@ -55,11 +55,8 @@ public class DistributedRateLimitingMiddleware
 
         if (string.IsNullOrWhiteSpace(clientIdentifier))
         {
-            clientIdentifier = $"ip:{context.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()}";
-            if (string.IsNullOrWhiteSpace(clientIdentifier))
-            {
-                clientIdentifier =  $"ip:{context.Connection.RemoteIpAddress?.ToString() ?? "unknown-client"}";
-            }
+            var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown-client";
+            clientIdentifier = $"ip:{ip}";
         }
         
         var result = await rateLimiterService.CheckRateLimitAsync(clientIdentifier, configTier.PermitLimit, configTier.WindowSeconds);
