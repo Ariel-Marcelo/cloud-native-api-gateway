@@ -19,13 +19,14 @@ flowchart TD
             JWT["3. JWT Bearer Authentication<br/>(Validación Criptográfica HS256)"]
             RL["4. Dynamic Tier Rate Limiter<br/>(Free vs Premium + IOptionsMonitor)"]
             AUTHZ["5. Route Authorization Policies<br/>(Anonymous vs Authenticated)"]
-            YARP["6. YARP Reverse Proxy<br/>• Claim-to-Header Offloading<br/>• RoundRobin Load Balancing<br/>• Active & Passive Health Checks"]
+            CACHE["6. Distributed Response Caching<br/>(X-Cache: HIT/MISS + Stream Swapping)"]
+            YARP["7. YARP Reverse Proxy<br/>• Claim-to-Header Offloading<br/>• RoundRobin Load Balancing<br/>• Active & Passive Health Checks"]
             
-            FH --> CID --> JWT --> RL --> AUTHZ --> YARP
+            FH --> CID --> JWT --> RL --> AUTHZ --> CACHE --> YARP
         end
 
         subgraph State["Estado Distribuido"]
-            REDIS[("Redis 7 Alpine<br/>Sorted Sets (ZSET)<br/>Scripts Lua Atómicos")]
+            REDIS[("Redis 7 Alpine<br/>• Sorted Sets (ZSET) + Lua<br/>• Strings + TTL (Response Cache)")]
         end
 
         subgraph Downstream["Microservicios Internos (Sin Puertos Públicos)"]
@@ -38,6 +39,7 @@ flowchart TD
 
     Client -->|"HTTP :5000"| FH
     RL <-->|"Sliding Window Atómico"| REDIS
+    CACHE <-->|"GET / SET EX (TTL 30s)"| REDIS
     YARP -->|"POST /auth/login (Público)"| AUTH
     YARP -->|"Balanceo RoundRobin + /healthz"| CAT1
     YARP -->|"Balanceo RoundRobin + /healthz"| CAT2
@@ -70,14 +72,19 @@ flowchart TD
 * **Propagación de `X-Correlation-Id` de Extremo a Extremo:** El Gateway genera o preserva el identificador de correlación en cada solicitud y lo propaga a todos los microservicios.
 * **Logging Estructurado Homogéneo:** Implementado mediante `ILogger.BeginScope` con `IncludeScopes` en **.NET 8** y `OncePerRequestFilter` + `SLF4J MDC` (`logback-spring.xml`) en **Java Spring Boot**, permitiendo rastrear una transacción completa a través de distintos lenguajes de programación.
 
+### 5. Response Caching Distribuido en el Borde (`X-Cache: HIT` / `MISS`)
+* **Cortocircuito en Memoria RAM con Redis:** Para rutas de alta lectura configurables (ej. `GET /catalog/products`), el Gateway consulta Redis antes de reenviar la solicitud a los microservicios downstream.
+* **Reducción Drástica de Latencia (`X-Cache: HIT`):** Si la respuesta existe en Redis dentro de la ventana de vida (`DefaultTtlSeconds: 30`), el Gateway responde directamente desde la RAM con el `Content-Type` y `Body` originales sin golpear los contenedores de `CatalogService` ni sus bases de datos.
+* **Intercepción Transparente de Streams (`X-Cache: MISS`):** Si la clave no existe, el middleware intercepta el stream de respuesta de YARP mediante *MemoryStream Swapping*, almacena el payload en Redis con expiración automática (`SET key value EX ttl`) únicamente cuando el microservicio responde `200 OK`, y devuelve los bytes al cliente con resiliencia *Fail-Open*.
+
 ---
 
 ## 🛠️ Stack Tecnológico
 
 | Capa | Tecnología | Rol en la Arquitectura |
 | :--- | :--- | :--- |
-| **API Gateway** | .NET 8 (C# 12), Microsoft YARP 2.3 | Enrutamiento inverso, Auth Offloading, Balanceo, Health Checks |
-| **Estado Distribuido** | Redis 7 Alpine, StackExchange.Redis, Lua | Almacenamiento atómico de ventanas deslizantes por Usuario/IP |
+| **API Gateway** | .NET 8 (C# 12), Microsoft YARP 2.3 | Enrutamiento inverso, Auth Offloading, Caché, Balanceo, Health Checks |
+| **Estado Distribuido** | Redis 7 Alpine, StackExchange.Redis, Lua | Ventanas deslizantes (Rate Limit) y Response Caching distribuido con TTL |
 | **Identidad (`AuthService`)** | Java 17, Spring Boot 4, JJWT (`0.13.0`) | Autenticación y emisión de tokens JWT firmados (`HS256`) |
 | **Catálogo (`CatalogService`)** | .NET 8 Minimal APIs (2 Réplicas) | Microservicio de productos con soporte de alta disponibilidad |
 | **Órdenes (`OrdersService`)** | Java 17, Spring Boot 4, Lombok | Microservicio de pedidos protegido por políticas del Gateway |
@@ -92,14 +99,15 @@ ApiGateway/
 ├── docker-compose.yml              # Orquestación de Redis, Gateway y 4 contenedores de microservicios
 ├── requests.http                   # Suite de pruebas HTTP listas para ejecutar
 ├── README.md                       # Documentación general
+├── Notes.md                        # Bitácora personal de arquitectura y lecciones aprendidas
 └── src/
     ├── Gateway/
     │   └── ApiGateway/             # API Gateway (.NET 8 + YARP)
-    │       ├── Configuration/      # Opciones tipadas (RateLimitingOptions, TierQuota)
-    │       ├── Middlewares/        # CorrelationIdMiddleware y DistributedRateLimitingMiddleware
-    │       ├── Services/           # RedisRateLimiterService (Script Lua Sliding Window)
-    │       ├── Program.cs          # Pipeline de seguridad, ForwardedHeaders y Transforms de YARP
-    │       └── appsettings.json    # Rutas, Clusters, HealthChecks y Tiers de Rate Limiting
+    │       ├── Configuration/      # Opciones tipadas (RateLimitingOptions, ResponseCachingOptions)
+    │       ├── Middlewares/        # CorrelationId, DistributedRateLimiting y DistributedResponseCaching
+    │       ├── Services/           # RedisRateLimiterService y RedisResponseCachedService
+    │       ├── Program.cs          # Pipeline de seguridad, ForwardedHeaders, Caché y Transforms de YARP
+    │       └── appsettings.json    # Rutas, Clusters, HealthChecks, Caché y Tiers de Rate Limiting
     └── Services/
         ├── AuthService/            # Microservicio Emisor de JWT (Java 17 / Spring Boot)
         ├── CatalogService/         # Microservicio de Catálogo (.NET 8 - Escalado a 2 nodos)
@@ -163,7 +171,16 @@ Observa los encabezados de respuesta inyectados por el Gateway:
 * `X-RateLimit-Limit`: `10` (si usaste el token de `Juan` - `Premium`) o `5` (si usaste el de `Maria` - `Free`).
 * `X-RateLimit-Remaining`: Peticiones disponibles en la ventana deslizante de 10 segundos.
 
-### 4. Probar Failover Automático (Health Checks de YARP)
+### 4. Probar Response Caching Distribuido (`X-Cache: MISS` vs `HIT`)
+Realiza dos peticiones seguidas en menos de 30 segundos al catálogo:
+```bash
+curl -i http://localhost:5000/catalog/products \
+  -H "Authorization: Bearer <TU_JWT_TOKEN>"
+```
+* **1ra Petición:** Devuelve `X-Cache: MISS` (YARP consulta a `CatalogService` y almacena la respuesta en Redis por 30s).
+* **2da Petición (dentro de los 30s):** Devuelve `X-Cache: HIT` directamente desde la memoria de Redis en menos de 2ms sin tocar los contenedores del microservicio.
+
+### 5. Probar Failover Automático (Health Checks de YARP)
 Detén una de las réplicas de catálogo:
 ```bash
 docker stop apigateway-catalog-service-2
