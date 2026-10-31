@@ -1,224 +1,176 @@
-# 🚀 Enterprise API Gateway con YARP, Redis y .NET 8
+# 🚀 Enterprise Polyglot API Gateway (.NET 8, YARP, Spring Boot & Redis)
 
-Una solución moderna, resiliente y de alto rendimiento de **API Gateway** construida con **ASP.NET Core (.NET 8 LTS)** y **YARP (Yet Another Reverse Proxy)** de Microsoft, complementada con un mecanismo de **Rate Limiting Distribuido (Sliding Window Counter)** implementado en **Redis** mediante scripts Lua atómicos, y orquestada con **Docker Compose**.
-
-Diseñada para servir como punto de entrada unificado y seguro en arquitecturas de microservicios políglotas.
+Una arquitectura de **API Gateway Cloud-Native** de alto rendimiento construida con **ASP.NET Core (.NET 8)** y **Microsoft YARP**, diseñada para orquestar, proteger y escalar un ecosistema de microservicios políglota (**.NET 8** y **Java 17 / Spring Boot**) utilizando **Redis** para control de tráfico distribuido y **Docker Compose** para aislamiento de red.
 
 ---
 
-## 🏛️ Diagrama de Arquitectura
+## 🏛️ Arquitectura del Sistema
 
 ```mermaid
 flowchart TD
-    subgraph Clientes Externos
-        A["Cliente Web / Mobile / Postman"]
+    subgraph Clientes["Clientes Externos"]
+        Client["Web / Mobile / Postman"]
     end
 
-    subgraph "Docker Network (gateway-network)"
-        subgraph "Punto de Entrada Público (Puerto 5000)"
-            GW["API Gateway (.NET 8 + YARP)<br/>• Correlation ID Middleware<br/>• Sliding Window Rate Limiter<br/>• Routing & Path Transforms"]
+    subgraph DockerNet["Red Privada Docker (gateway-network)"]
+        subgraph Edge["API Gateway (.NET 8 + YARP) — Puerto Público 5000"]
+            FH["1. ForwardedHeaders Middleware<br/>(Anti-IP Spoofing)"]
+            CID["2. Correlation ID Middleware<br/>(Trazabilidad Distribuida)"]
+            JWT["3. JWT Bearer Authentication<br/>(Validación Criptográfica HS256)"]
+            RL["4. Dynamic Tier Rate Limiter<br/>(Free vs Premium + IOptionsMonitor)"]
+            AUTHZ["5. Route Authorization Policies<br/>(Anonymous vs Authenticated)"]
+            YARP["6. YARP Reverse Proxy<br/>• Claim-to-Header Offloading<br/>• RoundRobin Load Balancing<br/>• Active & Passive Health Checks"]
+            
+            FH --> CID --> JWT --> RL --> AUTHZ --> YARP
         end
 
-        subgraph "Almacén de Estado Distribuido"
-            REDIS[("Redis 7 (In-Memory)<br/>Sorted Sets (ZSET)<br/>Atomic Lua Scripts")]
+        subgraph State["Estado Distribuido"]
+            REDIS[("Redis 7 Alpine<br/>Sorted Sets (ZSET)<br/>Scripts Lua Atómicos")]
         end
 
-        subgraph "Microservicios Internos (Red Aislada)"
-            MS1["CatalogService (.NET 8)<br/>Puerto interno 8080"]
-            MS2["[Extensible] Futuro Servicio<br/>(Spring Boot / Go / Node.js)"]
+        subgraph Downstream["Microservicios Internos (Sin Puertos Públicos)"]
+            AUTH["AuthService (Spring Boot 4 / Java 17)<br/>Emisor de Tokens JWT (:8085)"]
+            CAT1["CatalogService Nodo 1 (.NET 8)<br/>(:8080)"]
+            CAT2["CatalogService Nodo 2 (.NET 8)<br/>(:8082)"]
+            ORD["OrdersService (Spring Boot 4 / Java 17)<br/>(:8083)"]
         end
     end
 
-    A -->|"HTTP GET/POST /catalog/*"| GW
-    GW <-->|"Validar cuota y registrar timestamp (ZADD/ZCARD)"| REDIS
-    GW -->|"Proxy inverso /api/* (con X-Correlation-Id)"| MS1
-    GW -.->|"Fácil integración políglota"| MS2
+    Client -->|"HTTP :5000"| FH
+    RL <-->|"Sliding Window Atómico"| REDIS
+    YARP -->|"POST /auth/login (Público)"| AUTH
+    YARP -->|"Balanceo RoundRobin + /healthz"| CAT1
+    YARP -->|"Balanceo RoundRobin + /healthz"| CAT2
+    YARP -->|"Proxy + Headers X-User-*"| ORD
 ```
 
 ---
 
-## ✨ Características Principales
+## ✨ Características de Nivel Producción Implementadas
 
-- **Reverse Proxy con Microsoft YARP 2.x**: Enrutamiento declarativo de alta eficiencia, transformación de rutas (`/catalog/{path}` $\rightarrow$ `/api/{path}`) y balanceo de carga.
-- **Rate Limiting Distribuido con Sliding Window Counter**:
-  - Implementado sobre **Redis** usando colecciones ordenadas (**Sorted Sets / `ZSET`**) y scripts **Lua atómicos**.
-  - Evita el problema clásico de saturación en los bordes de tiempo del algoritmo *Fixed Window*.
-  - Inyecta cabeceras estándar de la industria: `X-RateLimit-Limit`, `X-RateLimit-Remaining` y `Retry-After` con respuesta `429 Too Many Requests` (RFC 6585).
-  - Estrategia **Fail-Open**: Si Redis no responde temporalmente, el tráfico de los usuarios no se interrumpe.
-- **Trazabilidad y Observabilidad**:
-  - Generación y propagación automática de `X-Correlation-Id` en todo el ciclo de vida de la petición.
-  - Logging estructurado con `BeginScope` para auditoría y rastreo distribuido.
-- **Arquitectura Políglota Agnóstica**:
-  - El Gateway opera sobre protocolos estándar HTTP/REST y gRPC.
-  - Puedes añadir servicios construidos en **Java / Spring Boot**, Python, Go o Node.js simplemente declarando el contenedor en `docker-compose.yml` y una regla en `appsettings.json`, sin modificar el código del Gateway.
-- **Contenedores y Aislamiento de Red**:
-  - `Dockerfile` multi-stage optimizado para producción.
-  - Los microservicios de backend no exponen puertos al host exterior; permanecen protegidos dentro de la red privada de Docker.
+### 1. Seguridad Centralizada y *JWT Gateway Offloading*
+* **Separación Emisor / Validador:** Un microservicio dedicado en **Java Spring Boot (`AuthService`)** autentica credenciales y firma tokens JWT (`HS256`) con `sub`, `username`, `role`, `tier`, `iss`, `aud` y `exp`.
+* **Validación en el Borde (Edge Authentication):** El API Gateway valida criptográficamente el token con `ClockSkew = TimeSpan.Zero` y `MapInboundClaims = false`. Las peticiones no autorizadas son rechazadas con `401 Unauthorized` en el Gateway sin consumir recursos de los microservicios internos.
+* **Prevención de *Header Spoofing* e Inyección de Contexto:** Mediante `RequestTransforms` de YARP, el Gateway elimina cualquier cabecera `X-User-*` maliciosa proveniente del exterior e inyecta los claims validados (`X-User-Id`, `X-User-Name`, `X-User-Role`, `X-User-Tier`) hacia los microservicios downstream.
 
----
+### 2. Rate Limiting Distribuido Dinámico por *Tier* (`Free` vs `Premium`)
+* **Algoritmo *Sliding Window Counter* en Redis con Lua:** Ejecución atómica en un único *round-trip* de red (`ZREMRANGEBYSCORE` + `ZCARD` + `ZADD` + `EXPIRE`), eliminando condiciones de carrera (*race conditions*) entre múltiples instancias del Gateway.
+* **Cuotas Dinámicas Basadas en Claims:**
+  * Usuarios autenticados se particionan en Redis por identidad (`ratelimit:sliding:user:{sub}`) y reciben la cuota correspondiente a su claim `tier` (`Free`: 5 req/10s, `Premium`: 10+ req/10s).
+  * Usuarios anónimos (ej. `/auth/login`) se particionan por IP (`ratelimit:sliding:ip:{ip}`) bajo el `DefaultTier`, protegiendo el servicio de autenticación contra ataques de fuerza bruta.
+* **Recarga en Caliente (`IOptionsMonitor`) y Resiliencia (*Fail-Open*):** Las cuotas por Tier pueden ajustarse en `appsettings.json` en tiempo real sin reiniciar el Gateway. Si Redis experimenta una caída transitoria, el Gateway degrada elegantemente permitiendo el paso del tráfico.
 
-## 🧠 ¿Cómo funciona el Sliding Window Counter en Redis?
+### 3. Alta Disponibilidad, Balanceo de Carga y Health Checks Híbridos
+* **Escalado Horizontal:** `CatalogService` opera en un clúster de múltiples réplicas balanceadas mediante política **`RoundRobin`**.
+* **Active + Passive Health Checks en YARP:**
+  * **Sondeo Activo (`ConsecutiveFailures`):** YARP verifica proactivamente el endpoint `/healthz` de cada contenedor (.NET y Spring Boot) cada 10 segundos. Si una réplica cae, se retira automáticamente del clúster.
+  * **Sondeo Pasivo (`TransportFailureRate`):** Monitorea la tasa de fallos de transporte en el tráfico real para aislar nodos degradados entre intervalos de sondeo activo y reactivarlos tras su periodo de enfriamiento (`ReactivationPeriod`).
 
-A diferencia de un contador simple (*Fixed Window*), el algoritmo de ventana deslizante mantiene un registro de cada solicitud entrante dentro de un rango de tiempo móvil.
-
-```text
-Ventana Móvil: Últimos 10 Segundos
-|----------------------------------------------------|
-[Sol. 1]     [Sol. 2]     [Sol. 3]    [Sol. 4]    [Sol. 5]   --> [Intento 6: BLOQUEADO (429)]
-t-9s         t-7s         t-4s        t-2s        t-0s
-```
-
-1. **`ZREMRANGEBYSCORE`**: Elimina de Redis todas las peticiones con marca de tiempo anterior a `(ahora - ventana)`.
-2. **`ZCARD`**: Cuenta el número de solicitudes en la ventana móvil actual.
-3. Si `conteo < límite`:
-   - Agrega la solicitud actual con **`ZADD`** usando el timestamp Unix en milisegundos como score.
-   - Aplica **`EXPIRE`** automático a la clave para liberar memoria.
-   - Permite que la petición continúe con código `200 OK`.
-4. Si `conteo >= límite`:
-   - Calcula exactamente cuántos segundos faltan para que la solicitud más antigua expire.
-   - Devuelve `429 Too Many Requests` con el encabezado `Retry-After: {segundos}`.
-
-Todo este proceso se ejecuta en **un único viaje de red (Round-Trip)** mediante un script Lua, garantizando atomicidad sin condiciones de carrera (*Race Conditions*).
+### 4. Observabilidad y Trazabilidad Distribuida Políglota
+* **Propagación de `X-Correlation-Id` de Extremo a Extremo:** El Gateway genera o preserva el identificador de correlación en cada solicitud y lo propaga a todos los microservicios.
+* **Logging Estructurado Homogéneo:** Implementado mediante `ILogger.BeginScope` con `IncludeScopes` en **.NET 8** y `OncePerRequestFilter` + `SLF4J MDC` (`logback-spring.xml`) en **Java Spring Boot**, permitiendo rastrear una transacción completa a través de distintos lenguajes de programación.
 
 ---
 
-## 📂 Estructura del Proyecto
+## 🛠️ Stack Tecnológico
+
+| Capa | Tecnología | Rol en la Arquitectura |
+| :--- | :--- | :--- |
+| **API Gateway** | .NET 8 (C# 12), Microsoft YARP 2.3 | Enrutamiento inverso, Auth Offloading, Balanceo, Health Checks |
+| **Estado Distribuido** | Redis 7 Alpine, StackExchange.Redis, Lua | Almacenamiento atómico de ventanas deslizantes por Usuario/IP |
+| **Identidad (`AuthService`)** | Java 17, Spring Boot 4, JJWT (`0.13.0`) | Autenticación y emisión de tokens JWT firmados (`HS256`) |
+| **Catálogo (`CatalogService`)** | .NET 8 Minimal APIs (2 Réplicas) | Microservicio de productos con soporte de alta disponibilidad |
+| **Órdenes (`OrdersService`)** | Java 17, Spring Boot 4, Lombok | Microservicio de pedidos protegido por políticas del Gateway |
+| **Infraestructura** | Docker & Docker Compose | Contenerización multi-stage y aislamiento en red privada |
+
+---
+
+## 📂 Estructura del Repositorio
 
 ```text
 ApiGateway/
-├── ApiGateway.sln                  # Solución .NET compatible
-├── ApiGateway.slnx                 # Solución moderna .NET 10
-├── docker-compose.yml              # Orquestación de Redis, Gateway y Microservicios
-├── requests.http                   # Suite de pruebas interactivas (REST Client / VS)
-├── README.md                       # Documentación
+├── docker-compose.yml              # Orquestación de Redis, Gateway y 4 contenedores de microservicios
+├── requests.http                   # Suite de pruebas HTTP listas para ejecutar
+├── README.md                       # Documentación general
 └── src/
     ├── Gateway/
-    │   └── ApiGateway/             # API Gateway (YARP + Redis + Middlewares)
-    │       ├── Middlewares/
-    │       │   ├── CorrelationIdMiddleware.cs
-    │       │   └── DistributedRateLimitingMiddleware.cs
-    │       ├── Services/
-    │       │   └── RedisRateLimiterService.cs
-    │       ├── Configuration/
-    │       │   └── RateLimitingOptions.cs
-    │       ├── Dockerfile
-    │       ├── Program.cs
-    │       └── appsettings.json
+    │   └── ApiGateway/             # API Gateway (.NET 8 + YARP)
+    │       ├── Configuration/      # Opciones tipadas (RateLimitingOptions, TierQuota)
+    │       ├── Middlewares/        # CorrelationIdMiddleware y DistributedRateLimitingMiddleware
+    │       ├── Services/           # RedisRateLimiterService (Script Lua Sliding Window)
+    │       ├── Program.cs          # Pipeline de seguridad, ForwardedHeaders y Transforms de YARP
+    │       └── appsettings.json    # Rutas, Clusters, HealthChecks y Tiers de Rate Limiting
     └── Services/
-        └── CatalogService/         # Microservicio Backend de Ejemplo
-            ├── Models/
-            │   └── Product.cs
-            ├── Dockerfile
-            ├── Program.cs
-            └── appsettings.json
+        ├── AuthService/            # Microservicio Emisor de JWT (Java 17 / Spring Boot)
+        ├── CatalogService/         # Microservicio de Catálogo (.NET 8 - Escalado a 2 nodos)
+        └── OrdersService/          # Microservicio de Órdenes (Java 17 / Spring Boot)
 ```
 
 ---
 
-## 🚀 Despliegue Rápido (Docker Compose)
+## 🚀 Cómo Ejecutar el Proyecto
 
 ### Prerrequisitos
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) instalado y en ejecución.
+* [Docker Desktop](https://www.docker.com/products/docker-desktop/) activo.
 
-### Ejecución con un solo comando:
-En la raíz del proyecto, ejecuta:
+### 1. Levantar toda la infraestructura
+Desde la raíz del repositorio:
 
 ```bash
-docker compose up --build -d
+docker compose up -d --build
 ```
 
-Verifica el estado de los contenedores:
-```bash
-docker compose ps
-```
-
-| Contenedor | Imagen | Puerto Expuesto | Función |
+| Contenedor | Tecnología | Puerto | Acceso |
 | :--- | :--- | :--- | :--- |
-| `apigateway-proxy` | `api-gateway:latest` | `5000:8080` | Punto de entrada público (YARP Gateway) |
-| `apigateway-redis` | `redis:7-alpine` | `6379:6379` | Almacén de contadores de tráfico |
-| `apigateway-catalog-service` | `catalog-service:latest` | Interno (`8080`) | Microservicio downstream protegido |
-
-Para detener el entorno:
-```bash
-docker compose down
-```
+| `apigateway-proxy` | .NET 8 + YARP | **`5000:8080`** | **Público** (`http://localhost:5000`) |
+| `apigateway-redis` | Redis 7 Alpine | `6379:6379` | Almacén de estado |
+| `apigateway-auth-service` | Spring Boot | `8085` | Privado (Solo vía Gateway `/auth/*`) |
+| `apigateway-catalog-service` | .NET 8 (Nodo 1) | `8080` | Privado (Solo vía Gateway `/catalog/*`) |
+| `apigateway-catalog-service-2` | .NET 8 (Nodo 2) | `8082` | Privado (Solo vía Gateway `/catalog/*`) |
+| `apigateway-orders-service` | Spring Boot | `8083` | Privado (Solo vía Gateway `/orders/*`) |
 
 ---
 
-## 🧪 Pruebas y Validación
+## 🧪 Guía de Pruebas Rápidas
 
-Puedes utilizar el archivo [requests.http](file:///C:/Sources/Personal-Proyects/ApiGateway/requests.http) directamente desde Visual Studio Code o Visual Studio, o ejecutar los siguientes comandos con `curl`:
-
-### 1. Verificar Estado del Gateway
+### 1. Verificar protección de rutas (`401 Unauthorized`)
 ```bash
-curl -i http://localhost:5000/healthz
+curl -i http://localhost:5000/orders
 ```
+*El Gateway bloquea la petición inmediatamente al no incluir un JWT válido.*
 
-### 2. Consultar Productos a través del Gateway
+### 2. Obtener un Token JWT (`Free` vs `Premium`)
+* **Usuario `Premium` (`Juan` / `hash1`):**
+  ```bash
+  curl -i -X POST http://localhost:5000/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"username":"Juan","password":"hash1"}'
+  ```
+* **Usuario `Free` (`Maria` / `hash2`):**
+  ```bash
+  curl -i -X POST http://localhost:5000/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"username":"Maria","password":"hash2"}'
+  ```
+
+### 3. Consumir microservicios protegidos y verificar Rate Limiting por Tier
 ```bash
-curl -i http://localhost:5000/catalog/products
+curl -i http://localhost:5000/orders \
+  -H "Authorization: Bearer <TU_JWT_TOKEN>"
 ```
-*Observa en los encabezados:*
-- `X-Correlation-Id: <uuid>` (Trazabilidad)
-- `X-RateLimit-Limit: 5`
-- `X-RateLimit-Remaining: 4`
+Observa los encabezados de respuesta inyectados por el Gateway:
+* `X-Correlation-Id`: ID único propagado hasta los logs de Java/.NET.
+* `X-RateLimit-Limit`: `10` (si usaste el token de `Juan` - `Premium`) o `5` (si usaste el de `Maria` - `Free`).
+* `X-RateLimit-Remaining`: Peticiones disponibles en la ventana deslizante de 10 segundos.
 
-### 3. Probar el Rate Limiting (Disparo de HTTP 429)
-Ejecuta 6 peticiones consecutivas rápidamente:
+### 4. Probar Failover Automático (Health Checks de YARP)
+Detén una de las réplicas de catálogo:
 ```bash
-for i in {1..6}; do curl -i http://localhost:5000/catalog/products; echo ""; done
+docker stop apigateway-catalog-service-2
 ```
-*En la 6ta petición obtendrás:*
-```http
-HTTP/1.1 429 Too Many Requests
-Content-Type: application/problem+json
-Retry-After: 9
-X-RateLimit-Limit: 5
-X-RateLimit-Remaining: 0
-
-{
-  "type": "https://tools.ietf.org/html/rfc6585#section-4",
-  "title": "Too Many Requests",
-  "status": 429,
-  "detail": "Has excedido el límite de solicitudes (5 peticiones por cada 10 segundos). Por favor intenta de nuevo en 9 segundos.",
-  "instance": "/catalog/products"
-}
-```
-
----
-
-## 🔮 Cómo integrar un Microservicio en Spring Boot (Políglota)
-
-Para demostrar cómo esta arquitectura se integra con tecnologías no .NET (como **Java / Spring Boot**):
-
-1. Agrega el servicio en `docker-compose.yml`:
-   ```yaml
-   orders-service:
-     image: orders-service:latest
-     build:
-       context: ./src/Services/OrdersService # Tu proyecto Spring Boot
-     networks:
-       - gateway-network
-   ```
-2. Agrega la ruta en `src/Gateway/ApiGateway/appsettings.json`:
-   ```json
-   "orders-route": {
-     "ClusterId": "orders-cluster",
-     "Match": { "Path": "/orders/{**catch-all}" },
-     "Transforms": [{ "PathPattern": "/api/{**catch-all}" }]
-   }
-   ```
-3. Agrega el clúster:
-   ```json
-   "orders-cluster": {
-     "Destinations": {
-       "orders-node": { "Address": "http://orders-service:8080" }
-     }
-   }
-   ```
-¡El Gateway enrutará, aplicará el Rate Limiting con Redis y propagará el Correlation ID al servicio de Spring Boot de manera transparente!
+Realiza múltiples peticiones a `GET http://localhost:5000/catalog/products` con tu token: YARP detecta la caída mediante `/healthz` y redirige el $100\%$ del tráfico hacia el nodo sano sin errores `502` para el cliente.
 
 ---
 
 ## 📄 Licencia
-Este proyecto es de código abierto bajo la licencia MIT.
+Distribuido bajo la licencia MIT.

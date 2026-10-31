@@ -14,6 +14,9 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<RateLimitingOptions>(
     builder.Configuration.GetSection(RateLimitingOptions.SectionName));
 
+builder.Services.Configure<ResponseCachingOptions>(
+    builder.Configuration.GetSection(ResponseCachingOptions.SectionName));
+
 // Configuración de Redis con reconexión resiliente
 var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
 var redisConfiguration = ConfigurationOptions.Parse(redisConnectionString);
@@ -25,6 +28,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(redisConfiguration));
 
 builder.Services.AddSingleton<IRedisRateLimiterService, RedisRateLimiterService>();
+builder.Services.AddSingleton<IRedisResponseCachedService, RedisResponseCachedService>();
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
@@ -89,18 +93,21 @@ builder.Services.AddAuthorization();
 // PIPELINE
 var app = builder.Build();
 
-// 1. Middleware de Correlación y Trazabilidad (primero en la canalización)
+// Middleware de Correlación y Trazabilidad (primero en la canalización)
 app.UseForwardedHeaders();
 app.UseMiddleware<CorrelationIdMiddleware>();
 
-// 2. Authentication
+// Authentication
 app.UseAuthentication();
 
-// 3. Middleware de Control de Tráfico Distribuido (Rate Limiting con Redis)
+// Middleware de Control de Tráfico Distribuido (Rate Limiting con Redis)
 app.UseMiddleware<DistributedRateLimitingMiddleware>();
 
-// 4. Authorization
+// Authorization
 app.UseAuthorization();
+
+// Caching response
+app.UseMiddleware<DistributedResponseCachingMiddleware>();
 
 // Endpoints propios del Gateway
 app.MapGet("/", () => Results.Ok(new
@@ -123,7 +130,7 @@ app.MapGet("/healthz", () => Results.Ok(new
     Timestamp = DateTime.UtcNow
 }));
 
-// 5. Enrutamiento del Reverse Proxy (YARP) hacia microservicios downstream
+// Enrutamiento del Reverse Proxy (YARP) hacia microservicios downstream
 app.MapReverseProxy();
 
 app.Run();

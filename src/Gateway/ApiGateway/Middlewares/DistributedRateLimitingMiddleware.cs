@@ -7,17 +7,8 @@ using Microsoft.Extensions.Options;
 
 namespace ApiGateway.Middlewares;
 
-public class DistributedRateLimitingMiddleware
+public class DistributedRateLimitingMiddleware(RequestDelegate next, ILogger<DistributedRateLimitingMiddleware> logger)
 {
-    private readonly RequestDelegate _next;
-    private readonly ILogger<DistributedRateLimitingMiddleware> _logger;
-
-    public DistributedRateLimitingMiddleware(RequestDelegate next, ILogger<DistributedRateLimitingMiddleware> logger)
-    {
-        _next = next;
-        _logger = logger;
-    }
-
     public async Task InvokeAsync(
         HttpContext context,
         IRedisRateLimiterService rateLimiterService,
@@ -28,7 +19,7 @@ public class DistributedRateLimitingMiddleware
         // Omitir endpoints de salud y métricas para no bloquear chequeos de infraestructura
         if (!config.Enabled || context.Request.Path.StartsWithSegments("/healthz"))
         {
-            await _next(context);
+            await next(context);
             return;
         }
 
@@ -48,10 +39,10 @@ public class DistributedRateLimitingMiddleware
 
         if (!config.Tiers.TryGetValue(tier, out var configTier))
         {
-            _logger.LogWarning("No se ha definido un tier valido para '{Tier}'. Se omite el rate limiting para este cliente.", tier);
+            logger.LogWarning("No se ha definido un tier valido para '{Tier}'. Se omite el rate limiting para este cliente.", tier);
             if (!config.Tiers.TryGetValue(config.DefaultTier, out configTier))
             {
-                _logger.LogError("No se ha definido un tier valido para el tier por defecto '{DefaultTier}'. Se omite el rate limiting para este cliente.", config.DefaultTier);
+                logger.LogError("No se ha definido un tier valido para el tier por defecto '{DefaultTier}'. Se omite el rate limiting para este cliente.", config.DefaultTier);
                 await NoTierConfigResponse(context, tier);
                 return;
             }
@@ -71,7 +62,7 @@ public class DistributedRateLimitingMiddleware
 
         if (!result.IsAllowed)
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "Rate limit excedido para ClientIdentifier '{ClientIdentifier}'. Ventana: {Window}s, Límite: {Limit}. Retry-After: {RetryAfter}s",
                 clientIdentifier, configTier.WindowSeconds, configTier.PermitLimit, result.RetryAfterSeconds);
 
@@ -79,7 +70,7 @@ public class DistributedRateLimitingMiddleware
             return;
         }
 
-        await _next(context);
+        await next(context);
     }
 
     private static async Task TooManyRequestConfig(HttpContext context, RateLimitResult result, TierQuota configTier)
@@ -117,6 +108,5 @@ public class DistributedRateLimitingMiddleware
         };
 
         await context.Response.WriteAsync(JsonSerializer.Serialize(problemDetails));
-        return;
     }
 }

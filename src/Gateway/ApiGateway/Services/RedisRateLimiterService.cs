@@ -9,11 +9,9 @@ public interface IRedisRateLimiterService
     Task<RateLimitResult> CheckRateLimitAsync(string clientIdentifier, int permitLimit, int windowSeconds);
 }
 
-public class RedisRateLimiterService : IRedisRateLimiterService
+public class RedisRateLimiterService(IConnectionMultiplexer redis, ILogger<RedisRateLimiterService> logger)
+    : IRedisRateLimiterService
 {
-    private readonly IConnectionMultiplexer _redis;
-    private readonly ILogger<RedisRateLimiterService> _logger;
-
     // Script Lua optimizado para ejecutar el algoritmo Sliding Window Counter de forma atómica en Redis
     private const string SlidingWindowLuaScript = @"
         local key = KEYS[1]
@@ -52,17 +50,11 @@ public class RedisRateLimiterService : IRedisRateLimiterService
         end
     ";
 
-    public RedisRateLimiterService(IConnectionMultiplexer redis, ILogger<RedisRateLimiterService> logger)
-    {
-        _redis = redis;
-        _logger = logger;
-    }
-
     public async Task<RateLimitResult> CheckRateLimitAsync(string clientIdentifier, int permitLimit, int windowSeconds)
     {
         try
         {
-            var db = _redis.GetDatabase();
+            var db = redis.GetDatabase();
             var key = $"ratelimit:sliding:{clientIdentifier}";
             var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var windowMs = windowSeconds * 1000;
@@ -73,21 +65,19 @@ public class RedisRateLimiterService : IRedisRateLimiterService
 
             var result = (RedisResult[]?)await db.ScriptEvaluateAsync(SlidingWindowLuaScript, keys, values);
 
-            if (result != null && result.Length >= 3)
-            {
-                var isAllowed = (int)result[0] == 1;
-                var remaining = (long)result[1];
-                var retryAfter = (long)result[2];
+            if (result == null || result.Length < 3) return new RateLimitResult(true, permitLimit - 1, 0);
+            
+            var isAllowed = (int)result[0] == 1;
+            var remaining = (long)result[1];
+            var retryAfter = (long)result[2];
 
-                return new RateLimitResult(isAllowed, remaining, retryAfter);
-            }
+            return new RateLimitResult(isAllowed, remaining, retryAfter);
 
             // Fallback por defecto en caso de respuesta inesperada
-            return new RateLimitResult(true, permitLimit - 1, 0);
         }
         catch (RedisException ex)
         {
-            _logger.LogError(ex, "Error al comunicarse con Redis para Rate Limiting. Se permite la solicitud como fallback (Fail-Open).");
+            logger.LogError(ex, "Error al comunicarse con Redis para Rate Limiting. Se permite la solicitud como fallback (Fail-Open).");
             // Fail-open: no tirar el tráfico completo si Redis sufre una caída transitoria
             return new RateLimitResult(true, 1, 0);
         }
