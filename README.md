@@ -238,6 +238,11 @@ curl -i http://localhost:5000/api/v1/orders \
 
 ### 7. Observar Métricas en Tiempo Real en Grafana, Prometheus y RedisInsight
 * **Grafana (`http://localhost:3000`):** Inicia sesión (`admin` / `admin`) y abre el Dashboard preconfigurado **`API Gateway & Redis - Observability`** para visualizar en vivo las Peticiones por Segundo (RPS), el contador de bloqueos `429`, el percentil `p95` de latencia, el balanceo `RoundRobin` de YARP y el ratio `HIT` vs `MISS` en Redis.
+  * *Nota (Dashboards as Code):* El tablero se carga automáticamente desde `monitoring/grafana/dashboards/apigateway-observability.json` (formato de aprovisionamiento `v1`). Si realizas modificaciones visuales en Grafana y deseas actualizar el archivo del repositorio:
+    ```powershell
+    $headers = @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("admin:admin")) }
+    (Invoke-RestMethod -Uri "http://localhost:3000/api/dashboards/uid/apigateway-redis-observability" -Headers $headers).dashboard | ConvertTo-Json -Depth 20 | Set-Content -Encoding UTF8 monitoring/grafana/dashboards/apigateway-observability.json
+    ```
 * **Prometheus (`http://localhost:9090/targets`):** Verifica que los jobs `api-gateway` (`http://api-gateway:8080/metrics`) y `redis-exporter` (`http://redis-exporter:9121/metrics`) estén en estado **`UP`**.
 * **RedisInsight (`http://localhost:5540`):** Conéctate usando `redis://default@redis:6379` para inspeccionar en tiempo real las estructuras `ZSET` del Rate Limiter (`ratelimit:sliding:...`) y las claves `STRING` del Response Cache (`cached:/api/v1/...`) junto con la cuenta regresiva de sus TTLs.
 

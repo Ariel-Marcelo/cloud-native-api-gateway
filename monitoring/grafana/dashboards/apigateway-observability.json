@@ -1,0 +1,270 @@
+﻿{
+  "annotations": {
+    "list": [
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": 243374333636608,
+  "links": [
+  ],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": [
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(http_server_request_duration_seconds_count{http_route!=\"/metrics\"}[1m])) by (http_route, http_response_status_code)",
+          "legendFormat": "{{http_route}} [HTTP {{http_response_status_code}}]",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "1. Peticiones por Segundo (RPS) en el Gateway por Ruta y Estado",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": [
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(http_server_request_duration_seconds_count{http_response_status_code=\"429\"}[1m])) or vector(0)",
+          "legendFormat": "Bloqueos 429",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "2. Respuestas 429 Disparadas (Ãltimo Minuto)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": [
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{http_route!=\"/metrics\"}[1m])) by (le, http_route))",
+          "legendFormat": "p95 {{http_route}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "3. Latencia Percentil 95 (p95) por Ruta",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": [
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 4,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(http_client_request_duration_seconds_count[1m])) by (server_address, http_response_status_code)",
+          "legendFormat": "{{server_address}} [HTTP {{http_response_status_code}}]",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "4. Balanceo YARP y Health Checks hacia Microservicios",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": [
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 5,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(redis_commands_processed_total[1m])",
+          "legendFormat": "Comandos Redis / seg",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "5. Salud de Redis: Comandos Procesados/seg (Lua + CachÃ©)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": [
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 6,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(redis_keyspace_hits_total[1m])",
+          "legendFormat": "Cache HITs / seg",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "rate(redis_keyspace_misses_total[1m])",
+          "legendFormat": "Cache MISSes / seg",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "6. Efectividad del CachÃ© en Redis (Keyspace Hits vs Misses / seg)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": [
+    "apigateway",
+    "yarp",
+    "redis",
+    "opentelemetry"
+  ],
+  "templating": {
+    "list": [
+    ]
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "title": "API Gateway \u0026 Redis - Observability",
+  "uid": "apigateway-redis-observability",
+  "version": 1
+}
