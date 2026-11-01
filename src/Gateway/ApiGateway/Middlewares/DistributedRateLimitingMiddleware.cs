@@ -17,7 +17,7 @@ public class DistributedRateLimitingMiddleware(RequestDelegate next, ILogger<Dis
         var config = options.CurrentValue;
 
         // Omitir endpoints de salud y métricas para no bloquear chequeos de infraestructura
-        if (!config.Enabled || context.Request.Path.StartsWithSegments("/healthz"))
+        if (!config.Enabled || context.Request.Path.StartsWithSegments("/healthz") || context.Request.Path.StartsWithSegments("/metrics"))
         {
             await next(context);
             return;

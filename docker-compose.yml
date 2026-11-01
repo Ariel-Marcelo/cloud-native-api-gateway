@@ -93,6 +93,69 @@ services:
     networks:
       - gateway-network
 
+    # Exportador de métricas de Redis para Prometheus (Observabilidad de Producción)
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: apigateway-redis-exporter
+    restart: unless-stopped
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - gateway-network
+
+  # Interfaz visual oficial de Redis (Para inspeccionar llaves y TTLs en vivo)
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: apigateway-redis-insight
+    restart: unless-stopped
+    ports:
+      - "5540:5540"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - gateway-network
+
+  # Recolector y base de datos de series temporales (Prometheus)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: apigateway-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api-gateway
+      - redis-exporter
+    networks:
+      - gateway-network
+
+  # Plataforma de visualización y Dashboards en tiempo real (Grafana)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: apigateway-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - gateway-network
+
+volumes:
+  grafana-data:
+
 networks:
   gateway-network:
     driver: bridge

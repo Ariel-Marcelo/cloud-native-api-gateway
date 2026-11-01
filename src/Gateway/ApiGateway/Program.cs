@@ -5,6 +5,7 @@ using ApiGateway.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
 using StackExchange.Redis;
 using Yarp.ReverseProxy.Health;
 using Yarp.ReverseProxy.Transforms;
@@ -94,6 +95,20 @@ builder.Services
     });
 builder.Services.AddAuthorization();
 
+
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics =>
+    {
+        metrics.AddAspNetCoreInstrumentation()
+            .AddHttpClientInstrumentation()
+            .AddMeter("Microsoft.AspNetCore.Hosting")
+            .AddMeter("Microsoft.AspNetCore.Server.Kestrel")
+            .AddMeter("System.Net.Http")
+            .AddPrometheusExporter();
+    });
+
+
+
 // PIPELINE
 var app = builder.Build();
 
@@ -135,6 +150,8 @@ app.MapGet("/healthz", () => Results.Ok(new
     Machine = Environment.MachineName,
     Timestamp = DateTime.UtcNow
 }));
+
+app.MapPrometheusScrapingEndpoint("/metrics");
 
 // Custom Response 503, 504 Circuit Breaker
 app.UseMiddleware<CustomResponseMiddleware>();

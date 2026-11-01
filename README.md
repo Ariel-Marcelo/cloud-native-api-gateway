@@ -36,6 +36,13 @@ flowchart TD
             CAT2["CatalogService Nodo 2 (.NET 8)<br/>(:8082)"]
             ORD["OrdersService (Spring Boot 4 / Java 17)<br/>(:8083)"]
         end
+
+        subgraph Obs["Observabilidad en Tiempo Real (OpenTelemetry + Prometheus + Grafana)"]
+            REX["Redis Exporter (:9121)"]
+            RINS["RedisInsight GUI (:5540)"]
+            PROM[("Prometheus TSDB (:9090)<br/>Scraping cada 5s")]
+            GRAF["Grafana Dashboards (:3000)<br/>RPS, 429s, Latencia p95 y Redis"]
+        end
     end
 
     Client -->|"HTTP :5000"| FH
@@ -45,6 +52,11 @@ flowchart TD
     YARP -->|"Balanceo RoundRobin + /healthz"| CAT1
     YARP -->|"Balanceo RoundRobin + /healthz"| CAT2
     YARP -->|"Proxy + Headers X-User-*"| ORD
+    REDIS --> REX
+    REDIS -.->|"Inspección de Claves/TTL"| RINS
+    PROM -->|"GET /metrics"| Edge
+    PROM -->|"GET /metrics"| REX
+    GRAF -->|"Consultas PromQL"| PROM
 ```
 
 ---
@@ -86,6 +98,16 @@ flowchart TD
   * En clústeres sin nodos sanos disponibles (`AvailableDestinationsPolicy: HealthyAndUnknown`), el Gateway rechaza las llamadas en **$0\text{ ms}$** con `503 Service Unavailable` sin tocar la red, pasando a estado *Half-Open* (`Unknown`) automáticamente tras los 30s de enfriamiento.
 * **Respuestas Amigables Estandarizadas (`CustomResponseMiddleware`):** Intercepta los estados `503 Service Unavailable` y `504 Gateway Timeout` para devolver un payload estructurado bajo el estándar **RFC 7807 (`application/problem+json`)** sin contaminar el caché de Redis.
 
+### 7. Observabilidad en Tiempo Real (OpenTelemetry, Prometheus, Grafana y Redis)
+* **Instrumentación Nativa con OpenTelemetry (.NET 8):** El API Gateway expone `/metrics` utilizando `OpenTelemetry.Exporter.Prometheus.AspNetCore`, capturando métricas de Kestrel, el pipeline HTTP de ASP.NET Core (`http_server_request_duration_seconds`) y las conexiones salientes de YARP (`http_client_request_duration_seconds`).
+* **Recolección de Series Temporales con Prometheus (`:9090`):** Hace *scraping* cada 5 segundos al API Gateway (`api-gateway:8080/metrics`) y al contenedor `redis-exporter:9121` sin ser bloqueado por el Rate Limiter.
+* **Dashboards Provisionados como Código en Grafana (`:3000`):** Incluye aprovisionamiento automático (*Configuration as Code* en `monitoring/grafana/`) para conectar Prometheus y cargar de serie el tablero **`API Gateway & Redis - Observability`** con:
+  * **Peticiones por Segundo (RPS)** desglosadas por ruta y código de estado HTTP.
+  * **Bloqueos del Rate Limiter (`429 Too Many Requests`)** en tiempo real.
+  * **Latencia Percentil 95 (`p95`)** calculada con `histogram_quantile(0.95, ...)`.
+  * **Balanceo de Carga de YARP y Sondeos de Salud (`/healthz`)** hacia los microservicios downstream.
+  * **Telemetría de Redis en Producción** (comandos/seg del script Lua y *Cache Hit vs Miss Ratio*) complementada con **RedisInsight (`:5540`)** para inspección visual de claves y TTLs en desarrollo.
+
 ---
 
 ## 🛠️ Stack Tecnológico
@@ -94,6 +116,7 @@ flowchart TD
 | :--- | :--- | :--- |
 | **API Gateway** | .NET 8 (C# 12), Microsoft YARP 2.3 | Enrutamiento inverso, Auth Offloading, Caché, Balanceo, Health Checks |
 | **Estado Distribuido** | Redis 7 Alpine, StackExchange.Redis, Lua | Ventanas deslizantes (Rate Limit) y Response Caching distribuido con TTL |
+| **Observabilidad** | OpenTelemetry, Prometheus, Grafana, Redis Exporter, RedisInsight | Telemetría en tiempo real (RPS, 429s, latencia p95, salud de Redis e inspección de llaves) |
 | **Identidad (`AuthService`)** | Java 17, Spring Boot 4, JJWT (`0.13.0`) | Autenticación y emisión de tokens JWT firmados (`HS256`) |
 | **Catálogo (`CatalogService`)** | .NET 8 Minimal APIs (2 Réplicas) | Microservicio de productos con soporte de alta disponibilidad |
 | **Órdenes (`OrdersService`)** | Java 17, Spring Boot 4, Lombok | Microservicio de pedidos protegido por políticas del Gateway |
@@ -105,17 +128,20 @@ flowchart TD
 
 ```text
 ApiGateway/
-├── docker-compose.yml              # Orquestación de Redis, Gateway y 4 contenedores de microservicios
+├── docker-compose.yml              # Orquestación de Gateway, Redis, Microservicios y Stack de Observabilidad
+├── prometheus.yml                  # Configuración de scraping de Prometheus (Gateway + Redis Exporter)
+├── monitoring/
+│   └── grafana/                    # Dashboards y DataSources provisionados como código (Zero-Click)
 ├── requests.http                   # Suite de pruebas HTTP listas para ejecutar
 ├── README.md                       # Documentación general
 ├── Notes.md                        # Bitácora personal de arquitectura y lecciones aprendidas
 └── src/
     ├── Gateway/
-    │   └── ApiGateway/             # API Gateway (.NET 8 + YARP)
+    │   └── ApiGateway/             # API Gateway (.NET 8 + YARP + OpenTelemetry)
     │       ├── Configuration/      # Opciones tipadas (RateLimitingOptions, ResponseCachingOptions)
     │       ├── Middlewares/        # CorrelationId, RateLimiting, ResponseCaching y CustomResponse (Fallback)
     │       ├── Services/           # RedisRateLimiterService y RedisResponseCachedService
-    │       ├── Program.cs          # Pipeline de seguridad, Resiliencia, Caché y Transforms de YARP
+    │       ├── Program.cs          # Pipeline de seguridad, Resiliencia, Caché, OpenTelemetry y Transforms de YARP
     │       └── appsettings.json    # Rutas, Clusters, Timeouts, Circuit Breaker, Caché y Tiers de Rate Limit
     └── Services/
         ├── AuthService/            # Microservicio Emisor de JWT (Java 17 / Spring Boot)
@@ -139,8 +165,12 @@ docker compose up -d --build
 
 | Contenedor | Tecnología | Puerto | Acceso |
 | :--- | :--- | :--- | :--- |
-| `apigateway-proxy` | .NET 8 + YARP | **`5000:8080`** | **Público** (`http://localhost:5000`) |
-| `apigateway-redis` | Redis 7 Alpine | `6379:6379` | Almacén de estado |
+| `apigateway-proxy` | .NET 8 + YARP + OTel | **`5000:8080`** | **Público** (`http://localhost:5000`) |
+| `apigateway-grafana` | Grafana | **`3000:3000`** | **Dashboard Visual** (`http://localhost:3000` — `admin` / `admin`) |
+| `apigateway-prometheus` | Prometheus TSDB | **`9090:9090`** | **Consola PromQL / Targets** (`http://localhost:9090`) |
+| `apigateway-redis-insight` | RedisInsight GUI | **`5540:5540`** | **Visor de Llaves Redis** (`http://localhost:5540` — URL: `redis://default@redis:6379`) |
+| `apigateway-redis` | Redis 7 Alpine | `6379:6379` | Almacén de estado en memoria |
+| `apigateway-redis-exporter` | Redis Exporter | `9121` | Privado (Métricas operativas de Redis hacia Prometheus) |
 | `apigateway-auth-service` | Spring Boot | `8085` | Privado (Solo vía Gateway `/api/v1/auth/*`) |
 | `apigateway-catalog-service` | .NET 8 (Nodo 1) | `8080` | Privado (Solo vía Gateway `/api/v1/catalog/*`) |
 | `apigateway-catalog-service-2` | .NET 8 (Nodo 2) | `8082` | Privado (Solo vía Gateway `/api/v1/catalog/*`) |
@@ -205,6 +235,11 @@ curl -i http://localhost:5000/api/v1/orders \
 * **Peticiones 1 a 5 (Circuito Cerrado):** Como el servicio tarda 5s y el `ActivityTimeout` del Gateway es de **2s**, YARP corta la espera a los 2 segundos y devuelve **`504 Gateway Timeout`** con formato `application/problem+json`.
 * **Petición 6 en adelante (Circuito Abierto):** Al alcanzar el umbral (`MinimalTotalCountThreshold: 5`), YARP abre el circuito por 30 segundos (`ReactivationPeriod: 00:00:30`) y responde en **$0\text{ ms}$** con **`503 Service Unavailable`** (`ProblemDetails`).
 * **Auto-Recuperación (*Half-Open* $\rightarrow$ *Closed*):** Pasados 30 segundos, llama a `GET http://localhost:5000/api/v1/orders?delay=0` para comprobar cómo YARP reactiva el nodo automáticamente y devuelve `200 OK`.
+
+### 7. Observar Métricas en Tiempo Real en Grafana, Prometheus y RedisInsight
+* **Grafana (`http://localhost:3000`):** Inicia sesión (`admin` / `admin`) y abre el Dashboard preconfigurado **`API Gateway & Redis - Observability`** para visualizar en vivo las Peticiones por Segundo (RPS), el contador de bloqueos `429`, el percentil `p95` de latencia, el balanceo `RoundRobin` de YARP y el ratio `HIT` vs `MISS` en Redis.
+* **Prometheus (`http://localhost:9090/targets`):** Verifica que los jobs `api-gateway` (`http://api-gateway:8080/metrics`) y `redis-exporter` (`http://redis-exporter:9121/metrics`) estén en estado **`UP`**.
+* **RedisInsight (`http://localhost:5540`):** Conéctate usando `redis://default@redis:6379` para inspeccionar en tiempo real las estructuras `ZSET` del Rate Limiter (`ratelimit:sliding:...`) y las claves `STRING` del Response Cache (`cached:/api/v1/...`) junto con la cuenta regresiva de sus TTLs.
 
 ---
 
