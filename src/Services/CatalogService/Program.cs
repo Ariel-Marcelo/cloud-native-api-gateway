@@ -35,8 +35,8 @@ app.MapGet("/healthz", () => Results.Ok(new
     Timestamp = DateTime.UtcNow 
 }));
 
-// Endpoints REST de Productos
-app.MapGet("/api/products", (string? category, ILogger<Program> logger, HttpContext ctx) =>
+// Endpoints REST de Productos (v1)
+app.MapGet("/api/v1/products", (string? category, ILogger<Program> logger, HttpContext ctx) =>
 {
     logger.LogInformation("Obteniendo productos");
 
@@ -49,7 +49,7 @@ app.MapGet("/api/products", (string? category, ILogger<Program> logger, HttpCont
 .WithName("GetProducts")
 .WithOpenApi();
 
-app.MapGet("/api/products/{id:guid}", (Guid id, ILogger<Program> logger, HttpContext ctx) =>
+app.MapGet("/api/v1/products/{id:guid}", (Guid id, ILogger<Program> logger, HttpContext ctx) =>
 {
     logger.LogInformation("Buscando producto {Id}", id);
 
@@ -59,7 +59,7 @@ app.MapGet("/api/products/{id:guid}", (Guid id, ILogger<Program> logger, HttpCon
 .WithName("GetProductById")
 .WithOpenApi();
 
-app.MapPost("/api/products", (Product product, ILogger<Program> logger, HttpContext ctx) =>
+app.MapPost("/api/v1/products", (Product product, ILogger<Program> logger, HttpContext ctx) =>
 {
     logger.LogInformation("[CatalogService] Creando nuevo producto '{Name}'", product.Name);
 
@@ -67,7 +67,7 @@ app.MapPost("/api/products", (Product product, ILogger<Program> logger, HttpCont
     product.CreatedAt = DateTime.UtcNow;
     products.Add(product);
 
-    return Results.Created($"/api/products/{product.Id}", product);
+    return Results.Created($"/api/v1/products/{product.Id}", product);
 })
 .WithName("CreateProduct")
 .WithOpenApi();

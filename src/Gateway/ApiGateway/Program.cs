@@ -121,7 +121,9 @@ app.MapGet("/", () => Results.Ok(new
     Status = "Online",
     Routes = new[]
     {
-        "/catalog/products (Proxy -> CatalogService)",
+        "/api/v1/auth/login (Proxy -> AuthService)",
+        "/api/v1/catalog/products (Proxy -> CatalogService)",
+        "/api/v1/orders (Proxy -> OrdersService)",
         "/healthz (Health Check del Gateway)"
     }
 }));

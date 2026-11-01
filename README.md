@@ -41,7 +41,7 @@ flowchart TD
     Client -->|"HTTP :5000"| FH
     RL <-->|"Sliding Window Atómico"| REDIS
     CACHE <-->|"GET / SET EX (TTL 30s)"| REDIS
-    YARP -->|"POST /auth/login (Público)"| AUTH
+    YARP -->|"POST /api/v1/auth/login (Público)"| AUTH
     YARP -->|"Balanceo RoundRobin + /healthz"| CAT1
     YARP -->|"Balanceo RoundRobin + /healthz"| CAT2
     YARP -->|"Proxy + Headers X-User-*"| ORD
@@ -141,10 +141,10 @@ docker compose up -d --build
 | :--- | :--- | :--- | :--- |
 | `apigateway-proxy` | .NET 8 + YARP | **`5000:8080`** | **Público** (`http://localhost:5000`) |
 | `apigateway-redis` | Redis 7 Alpine | `6379:6379` | Almacén de estado |
-| `apigateway-auth-service` | Spring Boot | `8085` | Privado (Solo vía Gateway `/auth/*`) |
-| `apigateway-catalog-service` | .NET 8 (Nodo 1) | `8080` | Privado (Solo vía Gateway `/catalog/*`) |
-| `apigateway-catalog-service-2` | .NET 8 (Nodo 2) | `8082` | Privado (Solo vía Gateway `/catalog/*`) |
-| `apigateway-orders-service` | Spring Boot | `8083` | Privado (Solo vía Gateway `/orders/*`) |
+| `apigateway-auth-service` | Spring Boot | `8085` | Privado (Solo vía Gateway `/api/v1/auth/*`) |
+| `apigateway-catalog-service` | .NET 8 (Nodo 1) | `8080` | Privado (Solo vía Gateway `/api/v1/catalog/*`) |
+| `apigateway-catalog-service-2` | .NET 8 (Nodo 2) | `8082` | Privado (Solo vía Gateway `/api/v1/catalog/*`) |
+| `apigateway-orders-service` | Spring Boot | `8083` | Privado (Solo vía Gateway `/api/v1/orders/*`) |
 
 ---
 
@@ -152,27 +152,27 @@ docker compose up -d --build
 
 ### 1. Verificar protección de rutas (`401 Unauthorized`)
 ```bash
-curl -i http://localhost:5000/orders
+curl -i http://localhost:5000/api/v1/orders
 ```
 *El Gateway bloquea la petición inmediatamente al no incluir un JWT válido.*
 
 ### 2. Obtener un Token JWT (`Free` vs `Premium`)
 * **Usuario `Premium` (`Juan` / `hash1`):**
   ```bash
-  curl -i -X POST http://localhost:5000/auth/login \
+  curl -i -X POST http://localhost:5000/api/v1/auth/login \
     -H "Content-Type: application/json" \
     -d '{"username":"Juan","password":"hash1"}'
   ```
 * **Usuario `Free` (`Maria` / `hash2`):**
   ```bash
-  curl -i -X POST http://localhost:5000/auth/login \
+  curl -i -X POST http://localhost:5000/api/v1/auth/login \
     -H "Content-Type: application/json" \
     -d '{"username":"Maria","password":"hash2"}'
   ```
 
 ### 3. Consumir microservicios protegidos y verificar Rate Limiting por Tier
 ```bash
-curl -i http://localhost:5000/orders \
+curl -i http://localhost:5000/api/v1/orders \
   -H "Authorization: Bearer <TU_JWT_TOKEN>"
 ```
 Observa los encabezados de respuesta inyectados por el Gateway:
@@ -183,7 +183,7 @@ Observa los encabezados de respuesta inyectados por el Gateway:
 ### 4. Probar Response Caching Distribuido (`X-Cache: MISS` vs `HIT`)
 Realiza dos peticiones seguidas en menos de 30 segundos al catálogo:
 ```bash
-curl -i http://localhost:5000/catalog/products \
+curl -i http://localhost:5000/api/v1/catalog/products \
   -H "Authorization: Bearer <TU_JWT_TOKEN>"
 ```
 * **1ra Petición:** Devuelve `X-Cache: MISS` (YARP consulta a `CatalogService` y almacena la respuesta en Redis por 30s).
@@ -194,17 +194,17 @@ Detén una de las réplicas de catálogo:
 ```bash
 docker stop apigateway-catalog-service-2
 ```
-Realiza múltiples peticiones a `GET http://localhost:5000/catalog/products` con tu token: YARP detecta la caída mediante `/healthz` y redirige el $100\%$ del tráfico hacia el nodo sano sin errores `502` para el cliente.
+Realiza múltiples peticiones a `GET http://localhost:5000/api/v1/catalog/products` con tu token: YARP detecta la caída mediante `/healthz` y redirige el $100\%$ del tráfico hacia el nodo sano sin errores `502` para el cliente.
 
 ### 6. Probar Timeout (`504`) y Cortocircuito / Circuit Breaker (`503`)
-El endpoint `GET /orders` incluye un retraso simulado por defecto de `5000ms` (configurable con `?delay=0` para respuestas rápidas):
+El endpoint `GET /api/v1/orders` incluye un retraso simulado por defecto de `5000ms` (configurable con `?delay=0` para respuestas rápidas):
 ```bash
-curl -i http://localhost:5000/orders \
+curl -i http://localhost:5000/api/v1/orders \
   -H "Authorization: Bearer <TU_JWT_TOKEN_PREMIUM>"
 ```
 * **Peticiones 1 a 5 (Circuito Cerrado):** Como el servicio tarda 5s y el `ActivityTimeout` del Gateway es de **2s**, YARP corta la espera a los 2 segundos y devuelve **`504 Gateway Timeout`** con formato `application/problem+json`.
 * **Petición 6 en adelante (Circuito Abierto):** Al alcanzar el umbral (`MinimalTotalCountThreshold: 5`), YARP abre el circuito por 30 segundos (`ReactivationPeriod: 00:00:30`) y responde en **$0\text{ ms}$** con **`503 Service Unavailable`** (`ProblemDetails`).
-* **Auto-Recuperación (*Half-Open* $\rightarrow$ *Closed*):** Pasados 30 segundos, llama a `GET http://localhost:5000/orders?delay=0` para comprobar cómo YARP reactiva el nodo automáticamente y devuelve `200 OK`.
+* **Auto-Recuperación (*Half-Open* $\rightarrow$ *Closed*):** Pasados 30 segundos, llama a `GET http://localhost:5000/api/v1/orders?delay=0` para comprobar cómo YARP reactiva el nodo automáticamente y devuelve `200 OK`.
 
 ---
 

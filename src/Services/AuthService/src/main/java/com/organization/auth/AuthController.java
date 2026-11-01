@@ -20,7 +20,7 @@ import java.util.Map;
 
 @Slf4j
 @RestController
-@RequestMapping("/api/authentication")
+@RequestMapping("/api/v1/authentication")
 public class AuthController {
 
     private final JwtConfig jwtConfig;
