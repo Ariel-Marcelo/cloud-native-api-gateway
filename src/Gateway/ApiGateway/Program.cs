@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using StackExchange.Redis;
+using Yarp.ReverseProxy.Health;
 using Yarp.ReverseProxy.Transforms;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,6 +17,9 @@ builder.Services.Configure<RateLimitingOptions>(
 
 builder.Services.Configure<ResponseCachingOptions>(
     builder.Configuration.GetSection(ResponseCachingOptions.SectionName));
+
+builder.Services.Configure<TransportFailureRateHealthPolicyOptions>(
+    builder.Configuration.GetSection("TransportFailureRateHealthPolicy"));
 
 // Configuración de Redis con reconexión resiliente
 var redisConnectionString = builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379";
@@ -130,7 +134,12 @@ app.MapGet("/healthz", () => Results.Ok(new
     Timestamp = DateTime.UtcNow
 }));
 
+// Custom Response 503, 504 Circuit Breaker
+app.UseMiddleware<CustomResponseMiddleware>();
+
 // Enrutamiento del Reverse Proxy (YARP) hacia microservicios downstream
 app.MapReverseProxy();
+
+
 
 app.Run();

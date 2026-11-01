@@ -20,9 +20,10 @@ flowchart TD
             RL["4. Dynamic Tier Rate Limiter<br/>(Free vs Premium + IOptionsMonitor)"]
             AUTHZ["5. Route Authorization Policies<br/>(Anonymous vs Authenticated)"]
             CACHE["6. Distributed Response Caching<br/>(X-Cache: HIT/MISS + Stream Swapping)"]
-            YARP["7. YARP Reverse Proxy<br/>• Claim-to-Header Offloading<br/>• RoundRobin Load Balancing<br/>• Active & Passive Health Checks"]
+            FALLBACK["7. Custom Response Middleware<br/>(Fallback RFC 7807 ProblemDetails 503/504)"]
+            YARP["8. YARP Reverse Proxy<br/>• Claim-to-Header Offloading<br/>• RoundRobin Load Balancing<br/>• ActivityTimeout (2s) & Circuit Breaker"]
             
-            FH --> CID --> JWT --> RL --> AUTHZ --> CACHE --> YARP
+            FH --> CID --> JWT --> RL --> AUTHZ --> CACHE --> FALLBACK --> YARP
         end
 
         subgraph State["Estado Distribuido"]
@@ -77,6 +78,14 @@ flowchart TD
 * **Reducción Drástica de Latencia (`X-Cache: HIT`):** Si la respuesta existe en Redis dentro de la ventana de vida (`DefaultTtlSeconds: 30`), el Gateway responde directamente desde la RAM con el `Content-Type` y `Body` originales sin golpear los contenedores de `CatalogService` ni sus bases de datos.
 * **Intercepción Transparente de Streams (`X-Cache: MISS`):** Si la clave no existe, el middleware intercepta el stream de respuesta de YARP mediante *MemoryStream Swapping*, almacena el payload en Redis con expiración automática (`SET key value EX ttl`) únicamente cuando el microservicio responde `200 OK`, y devuelve los bytes al cliente con resiliencia *Fail-Open*.
 
+### 6. Resiliencia Avanzada: Timeouts, Circuit Breaker por Nodo y *Fallback* (`ProblemDetails`)
+* **Corte por Tiempo de Espera (`ActivityTimeout: 00:00:02`):** Ninguna petición hacia los microservicios downstream puede quedarse bloqueada más de **2 segundos** esperando una base de datos colapsada. Si supera el umbral, YARP cancela el socket inmediatamente y devuelve `504 Gateway Timeout`.
+* **Circuit Breaker Nativo por Instancia (`Passive Health Check` + `HealthyAndUnknown`):**
+  * Configurado mediante `TransportFailureRateHealthPolicyOptions` (`DetectionWindowSize: 30s`, `MinimalTotalCountThreshold: 5`, `FailureRateLimit: 0.3`).
+  * Si un nodo acumula 5 timeouts/fallos dentro de la ventana de 30 segundos, YARP **abre el cortocircuito** exclusivamente para esa instancia durante 30 segundos (`ReactivationPeriod: 00:00:30`).
+  * En clústeres sin nodos sanos disponibles (`AvailableDestinationsPolicy: HealthyAndUnknown`), el Gateway rechaza las llamadas en **$0\text{ ms}$** con `503 Service Unavailable` sin tocar la red, pasando a estado *Half-Open* (`Unknown`) automáticamente tras los 30s de enfriamiento.
+* **Respuestas Amigables Estandarizadas (`CustomResponseMiddleware`):** Intercepta los estados `503 Service Unavailable` y `504 Gateway Timeout` para devolver un payload estructurado bajo el estándar **RFC 7807 (`application/problem+json`)** sin contaminar el caché de Redis.
+
 ---
 
 ## 🛠️ Stack Tecnológico
@@ -104,10 +113,10 @@ ApiGateway/
     ├── Gateway/
     │   └── ApiGateway/             # API Gateway (.NET 8 + YARP)
     │       ├── Configuration/      # Opciones tipadas (RateLimitingOptions, ResponseCachingOptions)
-    │       ├── Middlewares/        # CorrelationId, DistributedRateLimiting y DistributedResponseCaching
+    │       ├── Middlewares/        # CorrelationId, RateLimiting, ResponseCaching y CustomResponse (Fallback)
     │       ├── Services/           # RedisRateLimiterService y RedisResponseCachedService
-    │       ├── Program.cs          # Pipeline de seguridad, ForwardedHeaders, Caché y Transforms de YARP
-    │       └── appsettings.json    # Rutas, Clusters, HealthChecks, Caché y Tiers de Rate Limiting
+    │       ├── Program.cs          # Pipeline de seguridad, Resiliencia, Caché y Transforms de YARP
+    │       └── appsettings.json    # Rutas, Clusters, Timeouts, Circuit Breaker, Caché y Tiers de Rate Limit
     └── Services/
         ├── AuthService/            # Microservicio Emisor de JWT (Java 17 / Spring Boot)
         ├── CatalogService/         # Microservicio de Catálogo (.NET 8 - Escalado a 2 nodos)
@@ -186,6 +195,16 @@ Detén una de las réplicas de catálogo:
 docker stop apigateway-catalog-service-2
 ```
 Realiza múltiples peticiones a `GET http://localhost:5000/catalog/products` con tu token: YARP detecta la caída mediante `/healthz` y redirige el $100\%$ del tráfico hacia el nodo sano sin errores `502` para el cliente.
+
+### 6. Probar Timeout (`504`) y Cortocircuito / Circuit Breaker (`503`)
+El endpoint `GET /orders` incluye un retraso simulado por defecto de `5000ms` (configurable con `?delay=0` para respuestas rápidas):
+```bash
+curl -i http://localhost:5000/orders \
+  -H "Authorization: Bearer <TU_JWT_TOKEN_PREMIUM>"
+```
+* **Peticiones 1 a 5 (Circuito Cerrado):** Como el servicio tarda 5s y el `ActivityTimeout` del Gateway es de **2s**, YARP corta la espera a los 2 segundos y devuelve **`504 Gateway Timeout`** con formato `application/problem+json`.
+* **Petición 6 en adelante (Circuito Abierto):** Al alcanzar el umbral (`MinimalTotalCountThreshold: 5`), YARP abre el circuito por 30 segundos (`ReactivationPeriod: 00:00:30`) y responde en **$0\text{ ms}$** con **`503 Service Unavailable`** (`ProblemDetails`).
+* **Auto-Recuperación (*Half-Open* $\rightarrow$ *Closed*):** Pasados 30 segundos, llama a `GET http://localhost:5000/orders?delay=0` para comprobar cómo YARP reactiva el nodo automáticamente y devuelve `200 OK`.
 
 ---
 

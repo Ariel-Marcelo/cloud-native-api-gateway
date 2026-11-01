@@ -1,25 +1,17 @@
 namespace ApiGateway.Middlewares;
 
-public class CorrelationIdMiddleware
+public class CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> logger)
 {
-    private const string CorrelationIdHeader = "X-Correlation-Id";
-    private readonly RequestDelegate _next;
-    private readonly ILogger<CorrelationIdMiddleware> _logger;
-
-    public CorrelationIdMiddleware(RequestDelegate next, ILogger<CorrelationIdMiddleware> logger)
-    {
-        _next = next;
-        _logger = logger;
-    }
+    private const string _correlationIdHeader = "X-Correlation-Id";
 
     public async Task InvokeAsync(HttpContext context)
     {
         // Obtener o generar un nuevo Correlation ID
-        var correlationId = context.Request.Headers[CorrelationIdHeader].FirstOrDefault();
+        var correlationId = context.Request.Headers[_correlationIdHeader].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(correlationId))
         {
             correlationId = Guid.NewGuid().ToString("N");
-            context.Request.Headers[CorrelationIdHeader] = correlationId;
+            context.Request.Headers[_correlationIdHeader] = correlationId;
         }
 
         context.TraceIdentifier = correlationId;
@@ -27,16 +19,16 @@ public class CorrelationIdMiddleware
         // Inyectar en los encabezados de respuesta
         context.Response.OnStarting(() =>
         {
-            context.Response.Headers[CorrelationIdHeader] = correlationId;
+            context.Response.Headers[_correlationIdHeader] = correlationId;
             return Task.CompletedTask;
         });
 
         // Crear un scope de logging estructurado para que todos los logs de la petición incluyan el CorrelationId
-        using (_logger.BeginScope("CorrelationId:{CorrelationId}", correlationId))
+        using (logger.BeginScope("CorrelationId:{CorrelationId}", correlationId))
         {
-            _logger.LogInformation("Solicitud entrante: {Method} {Path}", context.Request.Method, context.Request.Path);
-            await _next(context);
-            _logger.LogInformation("Solicitud finalizada con código de estado: {StatusCode}", context.Response.StatusCode);
+            logger.LogInformation("Solicitud entrante: {Method} {Path}", context.Request.Method, context.Request.Path);
+            await next(context);
+            logger.LogInformation("Solicitud finalizada con código de estado: {StatusCode}", context.Response.StatusCode);
         }
     }
 }
