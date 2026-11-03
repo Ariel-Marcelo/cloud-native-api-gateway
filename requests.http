@@ -1,31 +1,85 @@
 ### ==============================================================================
-### Pruebas de API Gateway con YARP, Redis y Microservicio CatalogService
+### Suite de Pruebas Interactivas — Enterprise Polyglot API Gateway (.NET 8 + YARP)
+### Compatible con REST Client (VS Code) y HTTP Client (JetBrains Rider / IntelliJ)
 ### ==============================================================================
 @baseUrl = http://localhost:5000
 
-### 1. Estado del API Gateway (Información general)
+### ------------------------------------------------------------------------------
+### 1. ESTADO Y OBSERVABILIDAD DEL API GATEWAY (Públicos)
+### ------------------------------------------------------------------------------
+
+### 1.1 Información general del API Gateway
 GET {{baseUrl}}/
 Accept: application/json
 
-### 2. Health Check del API Gateway
+### 1.2 Health Check del API Gateway
 GET {{baseUrl}}/healthz
 Accept: application/json
 
-### 3. Enrutamiento YARP: Obtener todos los productos del CatalogService
-# Demuestra cómo /api/v1/catalog/products se transforma en /api/v1/products en el microservicio
+### 1.3 Endpoint de Métricas OpenTelemetry / Prometheus
+GET {{baseUrl}}/metrics
+Accept: text/plain
+
+
+### ------------------------------------------------------------------------------
+### 2. SEGURIDAD EN EL BORDE Y AUTENTICACIÓN JWT (AuthService — Spring Boot)
+### ------------------------------------------------------------------------------
+
+### 2.1 Verificar bloqueo de rutas protegidas sin Token JWT (Esperado: 401 Unauthorized)
+GET {{baseUrl}}/api/v1/orders
+Accept: application/json
+
+### 2.2 Login Usuario PREMIUM (Juan -> Cuota Rate Limit: 10 req / 10s)
+# @name loginPremium
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "username": "Juan",
+  "password": "hash1"
+}
+
+### Captura automática del token Premium (AuthService devuelve el JWT en texto plano)
+@tokenPremium = {{loginPremium.response.body.*}}
+
+### 2.3 Login Usuario FREE (Maria -> Cuota Rate Limit: 5 req / 10s)
+# @name loginFree
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "username": "Maria",
+  "password": "hash2"
+}
+
+### Captura automática del token Free
+@tokenFree = {{loginFree.response.body.*}}
+
+
+### ------------------------------------------------------------------------------
+### 3. CATÁLOGO, RESPONSE CACHING (HIT/MISS) Y TRAZABILIDAD (.NET 8 — 2 Nodos)
+### ------------------------------------------------------------------------------
+
+### 3.1 Obtener catálogo con Response Caching Distribuido en Redis (TTL 30s)
+# • 1ra ejecución: Devuelve cabecera 'X-Cache: MISS' (consulta a CatalogService y guarda en Redis)
+# • 2da ejecución (<30s): Devuelve cabecera 'X-Cache: HIT' desde RAM en <2ms
 GET {{baseUrl}}/api/v1/catalog/products
+Authorization: Bearer {{tokenPremium}}
 Accept: application/json
 
-### 4. Enrutamiento YARP con Query Params: Filtrar por Categoría
-GET {{baseUrl}}/api/v1/catalog/products?category=Computers
-Accept: application/json
-
-### 5. Enrutamiento YARP: Obtener producto por ID
+### 3.2 Obtener producto por ID (Balanceo RoundRobin directo entre Nodo 1 y Nodo 2)
 GET {{baseUrl}}/api/v1/catalog/products/11111111-1111-1111-1111-111111111111
+Authorization: Bearer {{tokenPremium}}
 Accept: application/json
 
-### 6. Enrutamiento YARP: Crear un nuevo producto (POST)
+### 3.3 Filtrar catálogo por categoría
+GET {{baseUrl}}/api/v1/catalog/products?category=Computers
+Authorization: Bearer {{tokenPremium}}
+Accept: application/json
+
+### 3.4 Crear un nuevo producto en CatalogService (POST — No cacheable)
 POST {{baseUrl}}/api/v1/catalog/products
+Authorization: Bearer {{tokenPremium}}
 Content-Type: application/json
 
 {
@@ -36,15 +90,44 @@ Content-Type: application/json
   "stock": 10
 }
 
-### 7. Trazabilidad con Correlation ID personalizado
-# Si envías tu propio X-Correlation-Id, el Gateway y el Microservicio lo preservan
+### 3.5 Trazabilidad distribuida con X-Correlation-Id personalizado + Anti-Spoofing
+# El Gateway preserva X-Correlation-Id, pero sobrescribe el header malicioso X-User-Role: SuperHacker
+# con el claim real validado del JWT (Admin/User).
 GET {{baseUrl}}/api/v1/catalog/products
+Authorization: Bearer {{tokenPremium}}
 X-Correlation-Id: custom-trace-client-xyz-777
+X-User-Role: SuperHacker
 Accept: application/json
 
-### 8. Prueba de Rate Limiting Distribuido (Sliding Window Counter en Redis)
-# El límite configurado es de 5 peticiones cada 10 segundos por cliente.
-# Ejecuta esta petición 6 veces seguidas rápidamente para recibir:
-# HTTP/1.1 429 Too Many Requests con la cabecera Retry-After
+
+### ------------------------------------------------------------------------------
+### 4. RATE LIMITING DISTRIBUIDO POR TIER (Redis Sorted Sets + Script Lua)
+### ------------------------------------------------------------------------------
+
+### 4.1 Prueba de Ráfaga con Usuario FREE (Maria -> Límite: 5 peticiones cada 10s)
+# Ejecuta esta petición 6 veces seguidas rápidamente:
+# • Peticiones 1 a 5 -> 200 OK (Observa cómo baja X-RateLimit-Remaining de 4 a 0)
+# • Petición 6+      -> 429 Too Many Requests + cabecera Retry-After: 10
 GET {{baseUrl}}/api/v1/catalog/products
+Authorization: Bearer {{tokenFree}}
+Accept: application/json
+
+
+### ------------------------------------------------------------------------------
+### 5. RESILIENCIA AVANZADA: TIMEOUTS (504) Y CIRCUIT BREAKER (503) — OrdersService
+### ------------------------------------------------------------------------------
+
+### 5.1 Disparo de Timeout (2s) y Apertura de Circuit Breaker (OrdersService con delay de 5s)
+# Ejecuta esta petición 6 veces seguidas con el token Premium:
+# • Peticiones 1 a 5 (Circuito Cerrado): YARP corta a los 2.0s -> 504 Gateway Timeout (ProblemDetails)
+# • Petición 6+      (Circuito Abierto): YARP responde en 0ms  -> 503 Service Unavailable por 30 segundos
+GET {{baseUrl}}/api/v1/orders
+Authorization: Bearer {{tokenPremium}}
+Accept: application/json
+
+### 5.2 Auto-Recuperación del Clúster (Half-Open -> Closed tras los 30s de enfriamiento)
+# Pasados 30s desde la apertura del circuito, ejecuta con ?delay=0 para verificar que el servicio
+# responde en milisegundos y YARP cierra el circuito nuevamente (200 OK).
+GET {{baseUrl}}/api/v1/orders?delay=0
+Authorization: Bearer {{tokenPremium}}
 Accept: application/json

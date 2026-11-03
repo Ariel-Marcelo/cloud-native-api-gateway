@@ -132,7 +132,10 @@ ApiGateway/
 ├── prometheus.yml                  # Configuración de scraping de Prometheus (Gateway + Redis Exporter)
 ├── monitoring/
 │   └── grafana/                    # Dashboards y DataSources provisionados como código (Zero-Click)
-├── requests.http                   # Suite de pruebas HTTP listas para ejecutar
+├── docs/
+│   └── images/                     # Capturas reproducibles de Grafana, RedisInsight y Simulación
+├── simulate-traffic.ps1            # Simulador automatizado de escenarios de tráfico (401, HIT/MISS, 429, 504, 503)
+├── requests.http                   # Suite de pruebas HTTP interactivas listas para ejecutar (VS Code / Rider)
 ├── README.md                       # Documentación general
 ├── Notes.md                        # Bitácora personal de arquitectura y lecciones aprendidas
 └── src/
@@ -148,6 +151,27 @@ ApiGateway/
         ├── CatalogService/         # Microservicio de Catálogo (.NET 8 - Escalado a 2 nodos)
         └── OrdersService/          # Microservicio de Órdenes (Java 17 / Spring Boot)
 ```
+
+---
+
+## 📸 Galería de Observabilidad en Vivo (100% Reproducible)
+
+> 💡 **¿Quieres reproducir exactamente estas métricas y gráficas en tu máquina?**
+> Tras levantar los contenedores con `docker compose up -d`, ejecuta **`.\simulate-traffic.ps1 -Continuous`** en PowerShell. El script ejecutará automáticamente todos los escenarios de prueba (autenticación JWT, caché `MISS` $\rightarrow$ `HIT`, bloqueos `429` por Rate Limit, timeouts `504` y apertura del Circuit Breaker `503`) poblando Grafana y RedisInsight en tiempo real.
+
+### 1. Tráfico por Ruta, Códigos de Estado (`200`, `401`, `429`, `503`, `504`) y Bloqueos de Rate Limit (`http://localhost:3000`)
+![Grafana Dashboard - Parte 1 (RPS y Rate Limiting)](docs/images/grafana-dashboard-parte-1.png)
+
+### 2. Latencia `p95`, Balanceo `RoundRobin` en YARP y Efectividad del Caché en Redis (`HIT` vs `MISS`)
+![Grafana Dashboard - Parte 2 (Latencia p95, Balanceo y Redis)](docs/images/grafana-dashboard-parte-2.png)
+
+### 3. Inspección de Estructuras Atómicas (`SORTED SET`) y Caché (`STRING`) en RedisInsight (`http://localhost:5540`)
+*Visualización jerárquica en tiempo real del payload cacheado (`cached:/api/v1/catalog/products` con TTL de 30s) y las ventanas deslizantes por usuario/IP (`ratelimit:sliding:*` con TTL de 10s).*
+![RedisInsight Keys](docs/images/redis-insight-keys.png)
+
+### 4. Simulación Automatizada de Escenarios (`simulate-traffic.ps1`)
+*Demostración de rechazo en el borde (`401` en `4ms`), emisión de JWT en Spring Boot y reducción de latencia de `20ms` (`X-Cache: MISS`) a `3ms` (`X-Cache: HIT`).*
+![Terminal Simulation](docs/images/terminal-simulation.png)
 
 ---
 
@@ -176,9 +200,20 @@ docker compose up -d --build
 | `apigateway-catalog-service-2` | .NET 8 (Nodo 2) | `8082` | Privado (Solo vía Gateway `/api/v1/catalog/*`) |
 | `apigateway-orders-service` | Spring Boot | `8083` | Privado (Solo vía Gateway `/api/v1/orders/*`) |
 
+### 2. Poblar métricas automáticamente (1 Comando)
+Para ejecutar la coreografía completa de pruebas y alimentar las gráficas de Grafana y RedisInsight:
+
+```powershell
+# Ejecución única (~35 segundos)
+.\simulate-traffic.ps1
+
+# O en modo continuo (mantiene las llaves y TTLs activos en Redis mientras inspeccionas)
+.\simulate-traffic.ps1 -Continuous
+```
+
 ---
 
-## 🧪 Guía de Pruebas Rápidas
+## 🧪 Guía de Pruebas Rápidas (Manuales o vía `requests.http`)
 
 ### 1. Verificar protección de rutas (`401 Unauthorized`)
 ```bash
