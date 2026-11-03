@@ -1,4 +1,4 @@
-﻿{
+{
   "annotations": {
     "list": [
     ]
@@ -87,7 +87,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(increase(http_server_request_duration_seconds_count{http_response_status_code=\"429\"}[1m])) or vector(0)",
+          "expr": "sum(http_server_request_duration_seconds_count{http_response_status_code=\"429\"}) or vector(0)",
           "legendFormat": "Bloqueos 429",
           "range": true,
           "refId": "A"

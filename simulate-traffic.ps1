@@ -184,14 +184,18 @@ for ($i = 1; $i -le 4; $i++) {
 }
 
 # ------------------------------------------------------------------------------
-# FASE 4: Rate Limiting Distribuido por Tier (Sliding Window en Redis + Lua)
+# FASE 4: Rate Limiting Distribuido por Tier (Sliding Window Log en Redis + Lua)
 # ------------------------------------------------------------------------------
 Write-Header "[FASE 4] Rate Limiting Distribuido - Rafaga Usuario Free (5 req/10s -> 429)"
-for ($i = 1; $i -le 8; $i++) {
+for ($i = 1; $i -le 9; $i++) {
     $res = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenFree -CorrelationId "demo-ratelimit-00$i"
     if ($res.StatusCode -eq 429) {
         Write-Host ("  [Req #{0}] GET /api/v1/catalog/products -> HTTP {1} TOO MANY REQUESTS ({2,2} ms) | Retry-After: {3}s" -f `
             $i, $res.StatusCode, $res.ElapsedMs, $res.RetryAfter) -ForegroundColor Red
+        # Tras el primer 429, esperar 5s (1 scrape de Prometheus) para que rate()/increase() tenga 2 muestras crecientes
+        if ($i -eq 6) {
+            Start-Sleep -Seconds 5
+        }
     }
     else {
         Write-Host ("  [Req #{0}] GET /api/v1/catalog/products -> HTTP {1} OK                ({2,2} ms) | Remaining: {3}/{4} | X-Cache: {5}" -f `
@@ -201,9 +205,9 @@ for ($i = 1; $i -le 8; $i++) {
 }
 
 # ------------------------------------------------------------------------------
-# FASE 5: Resiliencia - ActivityTimeout (504) y Circuit Breaker (503 en 0ms)
+# FASE 5: Resiliencia - ActivityTimeout (504) y Expulsion Pasiva (503 en 0ms)
 # ------------------------------------------------------------------------------
-Write-Header "[FASE 5] Resiliencia - Timeout (2s -> 504) y Circuit Breaker (5 fallos -> 503 en 0ms)"
+Write-Header "[FASE 5] Resiliencia - Timeout (2s -> 504) y Expulsion Pasiva (5 fallos -> 503 en 0ms)"
 Write-Host "  Esperando 10s para renovar la cuota del usuario Premium antes de la prueba de resiliencia..." -ForegroundColor DarkGray
 Start-Sleep -Seconds 10
 
@@ -214,7 +218,7 @@ for ($i = 1; $i -le 7; $i++) {
             $i, $res.ElapsedMs) -ForegroundColor Yellow
     }
     elseif ($res.StatusCode -eq 503) {
-        Write-Host ("  [Intento #{0}] GET /api/v1/orders            -> HTTP 503 CIRCUIT BREAKER OPEN ({1,4} ms) [Rechazo instantaneo 0ms - RFC 7807]" -f `
+        Write-Host ("  [Intento #{0}] GET /api/v1/orders            -> HTTP 503 SERVICE UNAVAILABLE ({1,4} ms) [Rechazo instantaneo 0ms - RFC 7807]" -f `
             $i, $res.ElapsedMs) -ForegroundColor Magenta
     }
     else {
@@ -227,11 +231,13 @@ for ($i = 1; $i -le 7; $i++) {
 # FASE 6: Pulso Final para Capturas en RedisInsight y Grafana
 # ------------------------------------------------------------------------------
 Write-Header "[FASE 6] Preparando Estado Activo en RedisInsight y Grafana"
-Write-Host "  Refrescando llaves en Redis (cached:/api/v1/catalog/products + ratelimit:sliding:user:*)..." -ForegroundColor Gray
+Write-Host "  Refrescando llaves en Redis (cached:/api/v1/catalog/products + ratelimit:sliding:user:*) y contador 429..." -ForegroundColor Gray
 
-# Refrescar cache (TTL 30s) y contadores ZSET (TTL 10s)
+# Refrescar cache (TTL 30s) y disparar nueva rafaga 429 para que Prometheus y Grafana muestren el pico al instante
 [void](Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenPremium)
-[void](Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenFree)
+for ($i = 1; $i -le 7; $i++) {
+    [void](Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenFree)
+}
 
 Write-Host ""
 Write-Host "[DONE] SIMULACION COMPLETADA CON EXITO." -ForegroundColor Green
@@ -246,11 +252,11 @@ if ($Continuous) {
     while ($true) {
         # 1. Mantener vivo el cache y hits con Premium
         $r1 = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenPremium
-        # 2. Generar llamadas con Free (algunas 200 OK y algunas 429)
-        for ($j = 1; $j -le 3; $j++) {
+        # 2. Generar rafaga con Free (6 peticiones para garantizar respuestas 429 continuas en Grafana)
+        for ($j = 1; $j -le 6; $j++) {
             $r2 = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenFree
         }
-        Write-Host ("  [Pulso #{0}] Premium: HTTP {1} (X-Cache: {2}) | Free Burst: HTTP {3} (Remaining: {4}) - Llaves Redis activas" -f `
+        Write-Host ("  [Pulso #{0}] Premium: HTTP {1} (X-Cache: {2}) | Free Burst: HTTP {3} (Remaining: {4}) - Llaves Redis y 429 activos" -f `
             $iter, $r1.StatusCode, $r1.Cache, $r2.StatusCode, $r2.RateRemaining) -ForegroundColor DarkGray
         $iter++
         Start-Sleep -Seconds 3
