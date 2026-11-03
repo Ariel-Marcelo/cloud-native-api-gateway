@@ -1,7 +1,6 @@
 package com.organization.auth;
 
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -11,12 +10,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import javax.crypto.SecretKey;
-import java.nio.charset.StandardCharsets;
+import java.math.BigInteger;
+import java.security.interfaces.RSAPublicKey;
 import java.time.Instant;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 @Slf4j
 @RestController
@@ -45,15 +42,13 @@ public class AuthController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        log.info("Generating JWT Token for user '{}'", userInfo.getUsername());
+        log.info("Generating RS256 JWT Token for user '{}' with kid '{}'", userInfo.getUsername(), jwtConfig.getKeyId());
         String role = userInfo.role;
         String tier = userInfo.tier;
 
-        String secretKey = jwtConfig.getSecret();
-        SecretKey key = Keys.hmacShaKeyFor(secretKey.getBytes(StandardCharsets.UTF_8));
         try {
-
             return ResponseEntity.ok(Jwts.builder()
+                    .header().keyId(jwtConfig.getKeyId()).and()
                     .subject(userInfo.id)
                     .issuer(jwtConfig.getIssuer())
                     .audience().add(jwtConfig.getAudience()).and()
@@ -62,12 +57,40 @@ public class AuthController {
                     .claim("username", userInfo.username)
                     .claim("role", role)
                     .claim("tier", tier)
-                    .signWith(key, Jwts.SIG.HS256).compact());
-
+                    .signWith(jwtConfig.getPrivateKey(), Jwts.SIG.RS256)
+                    .compact());
         } catch (Exception e) {
             log.error("Authentication Failed Exception for user '{}'", req.getUsername(), e);
             return ResponseEntity.badRequest().build();
         }
+    }
+
+    /**
+     * Endpoint estándar RFC 7517 (JSON Web Key Set - JWKS).
+     * Expone únicamente la clave pública RSA para que el API Gateway valide tokens RS256
+     * sin compartir ningún secreto simétrico.
+     */
+    @GetMapping("/.well-known/jwks.json")
+    public ResponseEntity<Map<String, Object>> jwks() {
+        RSAPublicKey publicKey = jwtConfig.getPublicKey();
+        Map<String, Object> jwk = new LinkedHashMap<>();
+        jwk.put("kty", "RSA");
+        jwk.put("use", "sig");
+        jwk.put("alg", "RS256");
+        jwk.put("kid", jwtConfig.getKeyId());
+        jwk.put("n", toBase64UrlUnsigned(publicKey.getModulus()));
+        jwk.put("e", toBase64UrlUnsigned(publicKey.getPublicExponent()));
+
+        return ResponseEntity.ok(Map.of("keys", List.of(jwk)));
+    }
+
+    private static String toBase64UrlUnsigned(BigInteger bigInt) {
+        byte[] bytes = bigInt.toByteArray();
+        // Eliminar byte de signo 0x00 inicial si BigInteger lo añadió
+        if (bytes.length > 1 && bytes[0] == 0) {
+            bytes = Arrays.copyOfRange(bytes, 1, bytes.length);
+        }
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     @Data

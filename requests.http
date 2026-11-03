@@ -22,14 +22,19 @@ Accept: text/plain
 
 
 ### ------------------------------------------------------------------------------
-### 2. SEGURIDAD EN EL BORDE Y AUTENTICACIÓN JWT (AuthService — Spring Boot)
+### 2. SEGURIDAD EN EL BORDE Y AUTENTICACIÓN ASIMÉTRICA JWT RS256 + JWKS (AuthService)
 ### ------------------------------------------------------------------------------
 
 ### 2.1 Verificar bloqueo de rutas protegidas sin Token JWT (Esperado: 401 Unauthorized)
 GET {{baseUrl}}/api/v1/orders
 Accept: application/json
 
-### 2.2 Login Usuario PREMIUM (Juan -> Cuota Rate Limit: 10 req / 10s)
+### 2.2 Inspeccionar Clave Pública RSA expuesta por AuthService (RFC 7517 JWKS)
+# El API Gateway consume este endpoint para validar firmas RS256 sin compartir ningún secreto privado
+GET {{baseUrl}}/api/v1/auth/.well-known/jwks.json
+Accept: application/json
+
+### 2.3 Login Usuario PREMIUM (Juan -> Cuota Rate Limit: 10 req / 10s, Firma RS256)
 # @name loginPremium
 POST {{baseUrl}}/api/v1/auth/login
 Content-Type: application/json
@@ -42,7 +47,7 @@ Content-Type: application/json
 ### Captura automática del token Premium (AuthService devuelve el JWT en texto plano)
 @tokenPremium = {{loginPremium.response.body.*}}
 
-### 2.3 Login Usuario FREE (Maria -> Cuota Rate Limit: 5 req / 10s)
+### 2.4 Login Usuario FREE (Maria -> Cuota Rate Limit: 5 req / 10s, Firma RS256)
 # @name loginFree
 POST {{baseUrl}}/api/v1/auth/login
 Content-Type: application/json
@@ -101,7 +106,7 @@ Accept: application/json
 
 
 ### ------------------------------------------------------------------------------
-### 4. RATE LIMITING DISTRIBUIDO POR TIER (Redis Sorted Sets + Script Lua)
+### 4. RATE LIMITING DISTRIBUIDO POR TIER (Redis Sorted Sets + Lua — Sliding Window Log)
 ### ------------------------------------------------------------------------------
 
 ### 4.1 Prueba de Ráfaga con Usuario FREE (Maria -> Límite: 5 peticiones cada 10s)
@@ -114,20 +119,20 @@ Accept: application/json
 
 
 ### ------------------------------------------------------------------------------
-### 5. RESILIENCIA AVANZADA: TIMEOUTS (504) Y CIRCUIT BREAKER (503) — OrdersService
+### 5. RESILIENCIA AVANZADA: ACTIVITY TIMEOUT (504) Y EXPULSIÓN PASIVA DE DESTINOS (503) — OrdersService
 ### ------------------------------------------------------------------------------
 
-### 5.1 Disparo de Timeout (2s) y Apertura de Circuit Breaker (OrdersService con delay de 5s)
+### 5.1 Disparo de ActivityTimeout (2s) y Expulsión Pasiva de Destino (OrdersService con delay de 5s)
 # Ejecuta esta petición 6 veces seguidas con el token Premium:
-# • Peticiones 1 a 5 (Circuito Cerrado): YARP corta a los 2.0s -> 504 Gateway Timeout (ProblemDetails)
-# • Petición 6+      (Circuito Abierto): YARP responde en 0ms  -> 503 Service Unavailable por 30 segundos
+# • Peticiones 1 a 5 (Destino Activo): YARP corta a los 2.0s de inactividad -> 504 Gateway Timeout (ProblemDetails)
+# • Petición 6+      (Destino Expulsado / Outlier Detection): YARP hace cortocircuito en el Gateway -> 503 Service Unavailable por 30s
 GET {{baseUrl}}/api/v1/orders
 Authorization: Bearer {{tokenPremium}}
 Accept: application/json
 
-### 5.2 Auto-Recuperación del Clúster (Half-Open -> Closed tras los 30s de enfriamiento)
-# Pasados 30s desde la apertura del circuito, ejecuta con ?delay=0 para verificar que el servicio
-# responde en milisegundos y YARP cierra el circuito nuevamente (200 OK).
+### 5.2 Auto-Recuperación del Clúster (ReactivationPeriod tras los 30s de enfriamiento)
+# Pasados 30s desde la expulsión del destino, ejecuta con ?delay=0 para verificar que el servicio
+# responde en milisegundos y YARP confirma el nodo nuevamente como Healthy (200 OK).
 GET {{baseUrl}}/api/v1/orders?delay=0
 Authorization: Bearer {{tokenPremium}}
 Accept: application/json

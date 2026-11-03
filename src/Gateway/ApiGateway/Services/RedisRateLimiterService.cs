@@ -12,13 +12,16 @@ public interface IRedisRateLimiterService
 public class RedisRateLimiterService(IConnectionMultiplexer redis, ILogger<RedisRateLimiterService> logger)
     : IRedisRateLimiterService
 {
-    // Script Lua optimizado para ejecutar el algoritmo Sliding Window Counter de forma atómica en Redis
+    // Script Lua atómico para ejecutar el algoritmo Sliding Window Log usando el reloj monotónico de Redis (TIME)
     private const string SlidingWindowLuaScript = @"
         local key = KEYS[1]
-        local now = tonumber(ARGV[1])
-        local windowMs = tonumber(ARGV[2])
-        local limit = tonumber(ARGV[3])
-        local memberId = ARGV[4]
+        local windowMs = tonumber(ARGV[1])
+        local limit = tonumber(ARGV[2])
+        local memberId = ARGV[3]
+
+        -- Obtener el tiempo actual directamente del motor Redis para evitar Clock Skew entre instancias del Gateway
+        local redisTime = redis.call('TIME')
+        local now = (tonumber(redisTime[1]) * 1000) + math.floor(tonumber(redisTime[2]) / 1000)
         local clearBefore = now - windowMs
 
         -- 1. Eliminar timestamps fuera de la ventana deslizante actual
@@ -29,8 +32,8 @@ public class RedisRateLimiterService(IConnectionMultiplexer redis, ILogger<Redis
 
         -- 3. Verificar si el límite ha sido alcanzado
         if currentCount < limit then
-            -- Registrar la nueva solicitud con score = timestamp actual
-            redis.call('ZADD', key, now, memberId)
+            -- Registrar la nueva solicitud con score = timestamp actual de Redis y miembro único (UUID)
+            redis.call('ZADD', key, now, tostring(now) .. ':' .. memberId)
             -- Asignar TTL proporcional a la ventana para liberar memoria automáticamente
             redis.call('EXPIRE', key, math.ceil(windowMs / 1000) + 2)
             local remaining = limit - currentCount - 1
@@ -56,12 +59,11 @@ public class RedisRateLimiterService(IConnectionMultiplexer redis, ILogger<Redis
         {
             var db = redis.GetDatabase();
             var key = $"ratelimit:sliding:{clientIdentifier}";
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var windowMs = windowSeconds * 1000;
-            var memberId = $"{nowMs}:{Guid.NewGuid():N}";
+            var memberId = Guid.NewGuid().ToString("N");
 
             var keys = new RedisKey[] { key };
-            var values = new RedisValue[] { nowMs, windowMs, permitLimit, memberId };
+            var values = new RedisValue[] { windowMs, permitLimit, memberId };
 
             var result = (RedisResult[]?)await db.ScriptEvaluateAsync(SlidingWindowLuaScript, keys, values);
 

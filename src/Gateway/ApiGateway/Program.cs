@@ -71,14 +71,18 @@ builder.Services.AddReverseProxy()
     });
 
 builder.Services.AddHealthChecks();
-
+builder.Services.AddHttpClient("JwksClient");
+builder.Services.AddSingleton<IJwksKeyResolverService, JwksKeyResolverService>();
 
 var jwtSection = builder.Configuration.GetSection("Jwt");
-var secretKey = jwtSection["Secret"] ?? throw new InvalidOperationException("JWT Secret no configurado");
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+    .AddJwtBearer();
+
+builder.Services
+    .AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
+    .Configure<IJwksKeyResolverService>((options, jwksResolver) =>
     {
         options.MapInboundClaims = false;
         options.TokenValidationParameters = new TokenValidationParameters
@@ -90,7 +94,8 @@ builder.Services
             ValidateLifetime = true,
             ClockSkew = TimeSpan.Zero,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey))
+            ValidAlgorithms = [SecurityAlgorithms.RsaSha256],
+            IssuerSigningKeyResolver = jwksResolver.ResolveSigningKeys
         };
     });
 builder.Services.AddAuthorization();
