@@ -14,27 +14,52 @@ public static class TestJwtTokenGenerator
     public const string Issuer = "apigateway-auth";
     public const string Audience = "apigateway-clients";
 
-    public static string GenerateToken(string userId, string username = "testuser", string role = "User", string tier = "Free")
+    public static string GenerateToken(
+        string? userId,
+        string username = "testuser",
+        string role = "User",
+        string tier = "Free",
+        string? issuer = null,
+        string? audience = null,
+        DateTime? notBefore = null,
+        DateTime? expires = null,
+        SecurityKey? customSigningKey = null)
     {
-        var credentials = new SigningCredentials(SigningKey, SecurityAlgorithms.RsaSha256);
+        var keyToUse = customSigningKey ?? SigningKey;
+        var credentials = new SigningCredentials(keyToUse, SecurityAlgorithms.RsaSha256);
 
-        var claims = new[]
+        var claims = new List<Claim>
         {
-            new Claim("sub", userId),
-            new Claim("username", username),
-            new Claim("role", role),
-            new Claim("tier", tier)
+            new("username", username),
+            new("role", role),
+            new("tier", tier)
         };
 
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            claims.Add(new Claim("sub", userId));
+        }
+
         var token = new JwtSecurityToken(
-            issuer: Issuer,
-            audience: Audience,
+            issuer: issuer ?? Issuer,
+            audience: audience ?? Audience,
             claims: claims,
-            notBefore: DateTime.UtcNow.AddMinutes(-1),
-            expires: DateTime.UtcNow.AddMinutes(30),
+            notBefore: notBefore ?? DateTime.UtcNow.AddMinutes(-5),
+            expires: expires ?? DateTime.UtcNow.AddMinutes(30),
             signingCredentials: credentials);
 
         return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    public static string GenerateTokenWithDifferentKey(string userId)
+    {
+        using var differentRsa = RSA.Create(2048);
+        var differentKey = new RsaSecurityKey(differentRsa.ExportParameters(true))
+        {
+            KeyId = "untrusted-key-id"
+        };
+
+        return GenerateToken(userId, customSigningKey: differentKey);
     }
 }
 

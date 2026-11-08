@@ -27,9 +27,19 @@ public class ApiGatewayWebApplicationFactory : WebApplicationFactory<Program>, I
         // Conectar de forma ASÍNCRONA antes de recibir tráfico HTTP para evitar ThreadPool Starvation en CI (2 vCPUs)
         var redisOptions = ConfigurationOptions.Parse(_redisContainer.GetConnectionString());
         redisOptions.AbortOnConnectFail = false;
+        redisOptions.AllowAdmin = true;
         redisOptions.ConnectRetry = 5;
         redisOptions.ConnectTimeout = 10000;
         _redisMultiplexer = await ConnectionMultiplexer.ConnectAsync(redisOptions);
+    }
+
+    public async Task FlushRedisAsync()
+    {
+        // Limpiar las claves de Redis
+        if (_redisMultiplexer is not null)
+        {
+            await _redisMultiplexer.GetDatabase().ExecuteAsync("FLUSHALL");
+        }
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)

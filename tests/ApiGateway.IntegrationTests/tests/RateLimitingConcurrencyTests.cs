@@ -2,6 +2,8 @@ namespace ApiGateway.IntegrationTests.tests;
 
 using System.Net;
 using System.Net.Http.Headers;
+using ApiGateway.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 [Collection("GatewayIntegrationTests")]
 public class RateLimitingConcurrencyTests(ApiGatewayWebApplicationFactory factory)
@@ -9,8 +11,26 @@ public class RateLimitingConcurrencyTests(ApiGatewayWebApplicationFactory factor
     [Fact]
     public async Task ConcurrentBurst_Of50Requests_ShouldAllowExactly5AndReject45With429()
     {
-        // Arrange: Usuario único con Tier "Free" (PermitLimit = 5 en ventana de 10s)
-        var client = factory.CreateClient();
+        await factory.FlushRedisAsync();
+
+        // Configurar una ventana amplia (60s) para que la prueba de ráfaga (5/45) sea determinista
+        // incluso si el runner de CI (2 vCPUs) tarda más de 10 segundos en procesar las 50 peticiones
+        using var customFactory = factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.PostConfigure<RateLimitingOptions>(options =>
+                {
+                    options.Tiers["Free"] = new TierQuota
+                    {
+                        PermitLimit = 5,
+                        WindowSeconds = 60
+                    };
+                });
+            });
+        });
+
+        var client = customFactory.CreateClient();
         var userId = $"burst-user-{Guid.NewGuid()}";
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", TestJwtTokenGenerator.GenerateToken(userId, tier: "Free"));

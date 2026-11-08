@@ -93,7 +93,7 @@ services:
     networks:
       - gateway-network
 
-    # Exportador de métricas de Redis para Prometheus (Observabilidad de Producción)
+  # Exportador de métricas de Redis para Prometheus (Observabilidad en Tiempo Real)
   redis-exporter:
     image: oliver006/redis_exporter:latest
     container_name: apigateway-redis-exporter

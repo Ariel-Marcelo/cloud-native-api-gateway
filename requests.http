@@ -1,6 +1,7 @@
 ### ==============================================================================
-### Suite de Pruebas Interactivas — Enterprise Polyglot API Gateway (.NET 8 + YARP)
+### Suite de Pruebas Interactivas — Cloud-Native Polyglot API Gateway (.NET 8 + YARP)
 ### Compatible con REST Client (VS Code) y HTTP Client (JetBrains Rider / IntelliJ)
+### Nota: Las credenciales Juan/hash1 y Maria/hash2 son datos semilla solo para demo.
 ### ==============================================================================
 @baseUrl = http://localhost:5000
 
