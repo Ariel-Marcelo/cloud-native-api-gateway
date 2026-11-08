@@ -6,4 +6,7 @@
   <Folder Name="/src/Services/">
     <Project Path="src/Services/CatalogService/CatalogService.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ApiGateway.IntegrationTests/ApiGateway.IntegrationTests.csproj" />
+  </Folder>
 </Solution>
