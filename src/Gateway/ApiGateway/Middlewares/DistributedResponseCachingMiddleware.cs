@@ -40,34 +40,38 @@ public class DistributedResponseCachingMiddleware(
             await next(httpContext);
             return;
         }
-
-        // Incluir QueryString normalizado en la clave de caché para evitar colisiones en filtros (?category=...)
-        var queryString = httpContext.Request.QueryString.HasValue
-            ? httpContext.Request.QueryString.Value!.ToLowerInvariant()
-            : string.Empty;
+        
+        var queryString = NormalizeQueryString(httpContext.Request.Query);
         var cacheKey = $"{normalizedPath}{queryString}";
 
-        try
+        var isPublicRoute = config.PublicRoutes.Contains<string>(normalizedPath);
+        if (isPublicRoute)
         {
-            logger.LogInformation($"Request {cacheKey} returned a response cached service.");
-            var response = await redisService.GetCachedResponse(cacheKey);
+            if (await GetCacheValue(httpContext, redisService, cacheKey)) return;
 
-            if (response != null)
+            await RefreshCache(httpContext, redisService, cacheKey, config);
+        }
+        else
+        {
+            var userId = httpContext.User.FindFirst("sub")?.Value;
+            if (!string.IsNullOrEmpty(userId))
             {
-                logger.LogInformation($"Request {cacheKey} Response cached service.");
-                httpContext.Response.StatusCode = StatusCodes.Status200OK;
-                httpContext.Response.Headers["X-Cache"] = "HIT";
-                httpContext.Response.ContentType = response.ContentType;
-                await httpContext.Response.WriteAsync(response.Body);
-                return;
+                httpContext.Response.Headers.Vary = "Authorization";
+                
+                if (await GetCacheValue(httpContext, redisService, $"{userId}:{cacheKey}")) return;
+                
+                await RefreshCache(httpContext, redisService, $"{userId}:{cacheKey}" , config);
             }
-            logger.LogInformation($"Request {cacheKey} cached response not found.");
+            else
+            {
+                await next(httpContext);
+            }
         }
-        catch (Exception ex)
-        {
-            logger.LogError($"Request {cacheKey} returned an error: {ex.Message}");
-        }
+    }
 
+    private async Task RefreshCache(HttpContext httpContext, IRedisResponseCachedService redisService, string cacheKey,
+        ResponseCachingOptions config)
+    {
         var originalBodyStream = httpContext.Response.Body;
         using var memoryStream = new MemoryStream();
         httpContext.Response.Body = memoryStream;
@@ -101,5 +105,43 @@ public class DistributedResponseCachingMiddleware(
         {
             httpContext.Response.Body = originalBodyStream;
         }
+    }
+
+    private async Task<bool> GetCacheValue(HttpContext httpContext, IRedisResponseCachedService redisService, string cacheKey)
+    {
+        try
+        {
+            logger.LogInformation($"Request {cacheKey} returned a response cached service.");
+            var response = await redisService.GetCachedResponse(cacheKey);
+
+            if (response != null)
+            {
+                logger.LogInformation($"Request {cacheKey} Response cached service.");
+                httpContext.Response.StatusCode = StatusCodes.Status200OK;
+                httpContext.Response.Headers["X-Cache"] = "HIT";
+                httpContext.Response.ContentType = response.ContentType;
+                await httpContext.Response.WriteAsync(response.Body);
+                return true;
+            }
+            logger.LogInformation($"Request {cacheKey} cached response not found.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError($"Request {cacheKey} returned an error: {ex.Message}");
+        }
+
+        return false;
+    }
+    
+    private static string NormalizeQueryString(IQueryCollection query)
+    {
+        if (query.Count == 0) return string.Empty;
+
+        var sortedParams = query
+            .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(kvp => kvp.Value, (kvp, val) =>
+                $"{kvp.Key.ToLowerInvariant()}={(val ?? string.Empty).ToLowerInvariant()}");
+
+        return "?" + string.Join("&", sortedParams);
     }
 }

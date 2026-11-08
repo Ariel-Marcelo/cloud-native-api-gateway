@@ -9,4 +9,6 @@ public class ResponseCachingOptions
     public int DefaultTtlSeconds { get; set; } = 30;
 
     public List<string> Routes { get; set; } = [];
+    
+    public List<string> PublicRoutes { get; set; } = [];
 }

@@ -51,4 +51,21 @@ public class ResponseCachingSecurityTests(ApiGatewayWebApplicationFactory factor
         Assert.DoesNotContain("Order-Secret-Of-user-a", bodyB);
         Assert.Contains("Order-Secret-Of-user-b", bodyB);
     }
+    
+    [Fact]
+    public async Task GetCatalog_WithDifferentQueryOrderAndCase_ShouldReturnCacheHit()
+    {
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", TestJwtTokenGenerator.GenerateToken("user-query-test"));
+        
+        var response1 = await client.GetAsync("/api/v1/catalog/products?b=2&a=1");
+        var response2 = await client.GetAsync("/api/v1/catalog/products?A=1&B=2");
+
+        Assert.Equal(HttpStatusCode.OK, response1.StatusCode);
+        Assert.Equal("MISS", response1.Headers.GetValues("X-Cache").First());
+
+        Assert.Equal(HttpStatusCode.OK, response2.StatusCode);
+        Assert.Equal("HIT", response2.Headers.GetValues("X-Cache").First());
+    }
 }
