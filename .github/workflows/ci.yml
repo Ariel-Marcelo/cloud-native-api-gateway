@@ -22,11 +22,11 @@ jobs:
     steps:
       # Descargar el código del repositorio
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Instalar el SDK de .NET 8 con caché de paquetes NuGet
       - name: Setup .NET 8 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
 
