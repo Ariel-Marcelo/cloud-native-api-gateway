@@ -2,14 +2,15 @@
 .SYNOPSIS
     Simulador de Trafico Automatizado para el API Gateway (.NET 8 + YARP + Redis + Observabilidad).
 .DESCRIPTION
-    Ejecuta una coreografia reproducible de escenarios de produccion para poblar en tiempo real
+    Ejecuta una coreografia reproducible de escenarios para poblar en tiempo real
     el Dashboard de Grafana (http://localhost:3000) y el visor RedisInsight (http://localhost:5540):
       1. Seguridad en el Borde (401 Unauthorized sin JWT)
-      2. Emision de JWT en AuthService (Tiers: Free vs Premium)
-      3. Response Caching Distribuido en Redis (X-Cache: MISS -> HIT en <5ms)
-      4. Rate Limiting Distribuido con Lua (200 OK -> 429 Too Many Requests)
-      5. Resiliencia Avanzada: ActivityTimeout (504) y apertura de Circuit Breaker (503 en 0ms)
-      6. Pulso final para mantener llaves activas en RedisInsight (ZSET + STRING con TTL)
+      2. Emision de JWT RS256 en AuthService (Tiers: Free vs Premium)
+      3. Response Caching en Ruta Publica (/api/v1/catalog/products -> cached:/api/v1/catalog/products) y Balanceo YARP
+      4. Rate Limiting Distribuido con Lua (5 req/10s -> 200 OK y 429 Too Many Requests)
+      5. Response Caching Zero-Trust Aislado por Usuario (/api/v1/orders?delay=0 -> cached:{sub}:/api/v1/orders?delay=0 + Vary: Authorization)
+      6. Resiliencia: ActivityTimeout (504) y Expulsion Pasiva de Destino (503 en 0ms)
+      7. Pulso final para mantener llaves activas en RedisInsight (ZSET + STRING publico y por usuario con TTL)
 .PARAMETER BaseUrl
     URL publica del API Gateway (por defecto: http://localhost:5000).
 .PARAMETER Continuous
@@ -105,6 +106,7 @@ function Invoke-GatewayRequest {
         StatusCode    = $statusCode
         ElapsedMs     = $sw.ElapsedMilliseconds
         Cache         = $headers["X-Cache"]
+        Vary          = $headers["Vary"]
         RateLimit     = $headers["X-RateLimit-Limit"]
         RateRemaining = $headers["X-RateLimit-Remaining"]
         RetryAfter    = $headers["Retry-After"]
@@ -115,7 +117,7 @@ function Invoke-GatewayRequest {
 
 Write-Header "[START] SIMULACION DE TRAFICO - API GATEWAY (.NET 8 + YARP + REDIS)"
 Write-Host "Gateway URL  : $BaseUrl" -ForegroundColor Gray
-Write-Host "Grafana      : http://localhost:3000 (admin / admin)" -ForegroundColor Gray
+Write-Host "Grafana      : http://localhost:3000 (admin / admin - solo demo)" -ForegroundColor Gray
 Write-Host "Prometheus   : http://localhost:9090" -ForegroundColor Gray
 Write-Host "RedisInsight : http://localhost:5540 (redis://default@redis:6379)" -ForegroundColor Gray
 
@@ -147,24 +149,24 @@ for ($i = 1; $i -le 3; $i++) {
 }
 
 # ------------------------------------------------------------------------------
-# FASE 2: Autenticacion en AuthService (Obtencion de JWTs Free y Premium)
+# FASE 2: Autenticacion en AuthService (Obtencion de JWTs RS256 Free y Premium)
 # ------------------------------------------------------------------------------
-Write-Header "[FASE 2] Emision de Tokens JWT en AuthService (Spring Boot)"
+Write-Header "[FASE 2] Emision de Tokens JWT RS256 en AuthService (Spring Boot)"
 
 $loginPremium = Invoke-GatewayRequest -Method "POST" -Path "/api/v1/auth/login" `
     -Body '{"username":"Juan","password":"hash1"}' -CorrelationId "demo-auth-premium"
 $tokenPremium = $loginPremium.Body.Trim().Trim('"')
-Write-Host ("  [Premium] Usuario 'Juan' autenticado  -> HTTP {0} ({1} ms) | Tier: Premium (10 req/10s)" -f $loginPremium.StatusCode, $loginPremium.ElapsedMs) -ForegroundColor Green
+Write-Host ("  [Premium] Usuario 'Juan'  (sub: 1) -> HTTP {0} ({1} ms) | Tier: Premium (10 req/10s)" -f $loginPremium.StatusCode, $loginPremium.ElapsedMs) -ForegroundColor Green
 
 $loginFree = Invoke-GatewayRequest -Method "POST" -Path "/api/v1/auth/login" `
     -Body '{"username":"Maria","password":"hash2"}' -CorrelationId "demo-auth-free"
 $tokenFree = $loginFree.Body.Trim().Trim('"')
-Write-Host ("  [Free]    Usuario 'Maria' autenticada -> HTTP {0} ({1} ms) | Tier: Free    (5 req/10s)" -f $loginFree.StatusCode, $loginFree.ElapsedMs) -ForegroundColor Green
+Write-Host ("  [Free]    Usuario 'Maria' (sub: 2) -> HTTP {0} ({1} ms) | Tier: Free    (5 req/10s)" -f $loginFree.StatusCode, $loginFree.ElapsedMs) -ForegroundColor Green
 
 # ------------------------------------------------------------------------------
-# FASE 3: Response Caching Distribuido (X-Cache: MISS -> HIT) y Balanceo YARP
+# FASE 3: Response Caching en Ruta Publica (PublicRoutes) y Balanceo YARP
 # ------------------------------------------------------------------------------
-Write-Header "[FASE 3] Response Caching Distribuido en Redis (X-Cache: MISS -> HIT)"
+Write-Header "[FASE 3] Response Caching en Ruta Publica (cached:/api/v1/catalog/products)"
 for ($i = 1; $i -le 6; $i++) {
     $res = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenPremium -CorrelationId "demo-cache-00$i"
     $color = if ($res.Cache -eq "HIT") { "Green" } else { "Cyan" }
@@ -205,13 +207,37 @@ for ($i = 1; $i -le 9; $i++) {
 }
 
 # ------------------------------------------------------------------------------
-# FASE 5: Resiliencia - ActivityTimeout (504) y Expulsion Pasiva (503 en 0ms)
+# FASE 5: Response Caching Zero-Trust Aislado por Usuario (/api/v1/orders?delay=0)
 # ------------------------------------------------------------------------------
-Write-Header "[FASE 5] Resiliencia - Timeout (2s -> 504) y Expulsion Pasiva (5 fallos -> 503 en 0ms)"
-Write-Host "  Esperando 10s para renovar la cuota del usuario Premium antes de la prueba de resiliencia..." -ForegroundColor DarkGray
+Write-Header "[FASE 5] Caché Zero-Trust Aislado por Usuario (cached:{sub}:/api/v1/orders?delay=0)"
+Write-Host "  Esperando 10s para renovar las cuotas de Rate Limit antes de probar Orders..." -ForegroundColor DarkGray
 Start-Sleep -Seconds 10
 
+# Juan (sub=1): 1ra llamada MISS (crea cached:1:/api/v1/orders?delay=0), 2da llamada HIT
+for ($i = 1; $i -le 2; $i++) {
+    $res = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/orders?delay=0" -Token $tokenPremium -CorrelationId "demo-priv-juan-00$i"
+    $color = if ($res.Cache -eq "HIT") { "Green" } else { "Cyan" }
+    Write-Host ("  [Juan  (sub:1) #{0}] GET /api/v1/orders?delay=0 -> HTTP {1} ({2,3} ms) | X-Cache: {3,-4} | Vary: {4}" -f `
+        $i, $res.StatusCode, $res.ElapsedMs, $res.Cache, $res.Vary) -ForegroundColor $color
+    Start-Sleep -Milliseconds 150
+}
+
+# Maria (sub=2): 1ra llamada recibe MISS (aislada de Juan, crea cached:2:/api/v1/orders?delay=0), 2da llamada HIT
+for ($i = 1; $i -le 2; $i++) {
+    $res = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/orders?delay=0" -Token $tokenFree -CorrelationId "demo-priv-maria-00$i"
+    $color = if ($res.Cache -eq "HIT") { "Green" } else { "Cyan" }
+    Write-Host ("  [Maria (sub:2) #{0}] GET /api/v1/orders?delay=0 -> HTTP {1} ({2,3} ms) | X-Cache: {3,-4} | Vary: {4}" -f `
+        $i, $res.StatusCode, $res.ElapsedMs, $res.Cache, $res.Vary) -ForegroundColor $color
+    Start-Sleep -Milliseconds 150
+}
+
+# ------------------------------------------------------------------------------
+# FASE 6: Resiliencia - ActivityTimeout (504) y Expulsion Pasiva (503 en 0ms)
+# ------------------------------------------------------------------------------
+Write-Header "[FASE 6] Resiliencia - Timeout (2s -> 504) y Expulsion Pasiva (5 fallos -> 503 en 0ms)"
+
 for ($i = 1; $i -le 7; $i++) {
+    # Llamada sin query string (?delay=5000 por defecto en OrdersService) -> corta a los 2s con 504 (no se cachea por no ser 200 OK)
     $res = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/orders" -Token $tokenPremium -CorrelationId "demo-cb-00$i"
     if ($res.StatusCode -eq 504) {
         Write-Host ("  [Intento #{0}] GET /api/v1/orders (Delay 5s) -> HTTP 504 GATEWAY TIMEOUT     ({1,4} ms) [Cortado a los 2s por YARP]" -f `
@@ -228,12 +254,12 @@ for ($i = 1; $i -le 7; $i++) {
 }
 
 # ------------------------------------------------------------------------------
-# FASE 6: Pulso Final para Capturas en RedisInsight y Grafana
+# FASE 7: Pulso Final para Capturas en RedisInsight y Grafana
 # ------------------------------------------------------------------------------
-Write-Header "[FASE 6] Preparando Estado Activo en RedisInsight y Grafana"
-Write-Host "  Refrescando llaves en Redis (cached:/api/v1/catalog/products + ratelimit:sliding:user:*) y contador 429..." -ForegroundColor Gray
+Write-Header "[FASE 7] Preparando Estado Activo en RedisInsight y Grafana"
+Write-Host "  Refrescando llaves en Redis (cached:/api/v1/catalog/products, cached:{sub}:/api/v1/orders?delay=0 y ratelimit:sliding:user:*)..." -ForegroundColor Gray
 
-# Refrescar cache (TTL 30s) y disparar nueva rafaga 429 para que Prometheus y Grafana muestren el pico al instante
+# Refrescar cache publico y disparar rafaga 429 para que Prometheus y Grafana muestren el pico
 [void](Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenPremium)
 for ($i = 1; $i -le 7; $i++) {
     [void](Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenFree)
@@ -242,22 +268,26 @@ for ($i = 1; $i -le 7; $i++) {
 Write-Host ""
 Write-Host "[DONE] SIMULACION COMPLETADA CON EXITO." -ForegroundColor Green
 Write-Host "   1. Abre Grafana      -> http://localhost:3000 (Dashboard: 'API Gateway & Redis - Observability')" -ForegroundColor White
-Write-Host "   2. Abre RedisInsight -> http://localhost:5540 (Veras las llaves 'cached:*' y 'ratelimit:sliding:*')" -ForegroundColor White
+Write-Host "   2. Abre RedisInsight -> http://localhost:5540 (Veras tanto 'cached:/api/v1/catalog/products' como 'cached:1:/api/v1/orders?delay=0' y 'cached:2:...')" -ForegroundColor White
 
 if ($Continuous) {
     Write-Host ""
     Write-Host "[LOOP] MODO CONTINUO ACTIVO (Presiona Ctrl+C para detener)..." -ForegroundColor Cyan
-    Write-Host "   Manteniendo las llaves de Redis vivas y enviando trafico mixto cada 3 segundos para tus capturas..." -ForegroundColor Gray
+    Write-Host "   Manteniendo vivas en Redis tanto la clave publica (catalog) como las claves por usuario (orders: 1 y 2)..." -ForegroundColor Gray
     $iter = 1
     while ($true) {
-        # 1. Mantener vivo el cache y hits con Premium
-        $r1 = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenPremium
+        # 1. Mantener vivo el cache publico (/api/v1/catalog/products) y el cache privado por usuario (/api/v1/orders?delay=0)
+        $rPub   = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenPremium
+        $rOrdA  = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/orders?delay=0" -Token $tokenPremium
+        $rOrdB  = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/orders?delay=0" -Token $tokenFree
+
         # 2. Generar rafaga con Free (6 peticiones para garantizar respuestas 429 continuas en Grafana)
         for ($j = 1; $j -le 6; $j++) {
-            $r2 = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenFree
+            $rBurst = Invoke-GatewayRequest -Method "GET" -Path "/api/v1/catalog/products" -Token $tokenFree
         }
-        Write-Host ("  [Pulso #{0}] Premium: HTTP {1} (X-Cache: {2}) | Free Burst: HTTP {3} (Remaining: {4}) - Llaves Redis y 429 activos" -f `
-            $iter, $r1.StatusCode, $r1.Cache, $r2.StatusCode, $r2.RateRemaining) -ForegroundColor DarkGray
+
+        Write-Host ("  [Pulso #{0}] Catalog(Pub): {1} ({2}) | Orders(1): {3} ({4}) | Orders(2): {5} ({6}) | Free Burst: {7}" -f `
+            $iter, $rPub.StatusCode, $rPub.Cache, $rOrdA.StatusCode, $rOrdA.Cache, $rOrdB.StatusCode, $rOrdB.Cache, $rBurst.StatusCode) -ForegroundColor DarkGray
         $iter++
         Start-Sleep -Seconds 3
     }
