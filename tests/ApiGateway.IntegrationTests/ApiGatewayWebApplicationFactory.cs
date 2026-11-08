@@ -14,11 +14,10 @@ using Testcontainers.Redis;
 
 public class ApiGatewayWebApplicationFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    private static readonly string RedisImage =
+    private static readonly string _redisImage =
         Environment.GetEnvironmentVariable("TEST_REDIS_IMAGE") ?? "redis:7-alpine";
     
-    private readonly RedisContainer _redisContainer = new RedisBuilder()
-        .WithImage(RedisImage)
+    private readonly RedisContainer _redisContainer = new RedisBuilder(_redisImage)
         .Build();
     
     public async Task InitializeAsync()
