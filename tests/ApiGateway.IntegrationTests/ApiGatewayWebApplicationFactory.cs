@@ -20,9 +20,18 @@ public class ApiGatewayWebApplicationFactory : WebApplicationFactory<Program>, I
     private readonly RedisContainer _redisContainer = new RedisBuilder(_redisImage)
         .Build();
     
+    private IConnectionMultiplexer? _redisMultiplexer;
+    
     public async Task InitializeAsync()
     {
         await _redisContainer.StartAsync();
+        
+        // Conectar de forma ASÍNCRONA antes de recibir tráfico HTTP para evitar ThreadPool Starvation en CI (2 vCPUs)
+        var redisOptions = ConfigurationOptions.Parse(_redisContainer.GetConnectionString());
+        redisOptions.AbortOnConnectFail = false;
+        redisOptions.ConnectRetry = 5;
+        redisOptions.ConnectTimeout = 10000;
+        _redisMultiplexer = await ConnectionMultiplexer.ConnectAsync(redisOptions);
     }
     
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -31,10 +40,9 @@ public class ApiGatewayWebApplicationFactory : WebApplicationFactory<Program>, I
         {
             // Quitamos el IConnectionMultiplexer que apuntaba a localhost:6379 en Program.cs
             services.RemoveAll<IConnectionMultiplexer>();
-
-            // Registramos uno nuevo conectado al contenedor efímero de Testcontainers
-            services.AddSingleton<IConnectionMultiplexer>(_ =>
-                ConnectionMultiplexer.Connect(_redisContainer.GetConnectionString()));
+            
+            // Inyectamos la instancia ya conectada (cero bloqueo en el contenedor de DI)
+            services.AddSingleton<IConnectionMultiplexer>(_redisMultiplexer!);
             
             // Reemplazar el resolvedor JWKS para no llamar por red a auth-service
             services.RemoveAll<IJwksKeyResolverService>();
@@ -49,6 +57,10 @@ public class ApiGatewayWebApplicationFactory : WebApplicationFactory<Program>, I
     // DESPUÉS de terminar los tests
     public new async Task DisposeAsync()
     {
+        if (_redisMultiplexer is not null)
+        {
+            await _redisMultiplexer.DisposeAsync();
+        }
         await _redisContainer.DisposeAsync();
         await base.DisposeAsync();
     }
