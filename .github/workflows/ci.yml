@@ -1,0 +1,43 @@
+name: ApiGateway CI
+
+# 1. Disparadores (Triggers): Se ejecuta en cada push o Pull Request hacia main / master
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-and-test:
+    name: Build & Integration Tests (.NET 8 + Testcontainers)
+    # 2. ubuntu-latest incluye Docker preinstalado, indispensable para Testcontainers.Redis
+    runs-on: ubuntu-latest
+
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      TEST_REDIS_IMAGE: redis:7-alpine
+
+    steps:
+      # Descargar el código del repositorio
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Instalar el SDK de .NET 8 con caché de paquetes NuGet
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # Restaurar dependencias de la solución
+      - name: Restore dependencies
+        run: dotnet restore ApiGateway.sln
+
+      # Compilar en modo Release sin volver a restaurar
+      - name: Build solution
+        run: dotnet build ApiGateway.sln --configuration Release --no-restore
+
+      # Ejecutar los Tests de Integración (levanta Redis en Docker vía Testcontainers)
+      - name: Run Integration Tests
+        run: dotnet test ApiGateway.sln --configuration Release --no-build --verbosity normal
