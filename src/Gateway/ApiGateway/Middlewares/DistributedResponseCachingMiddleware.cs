@@ -32,7 +32,7 @@ public class DistributedResponseCachingMiddleware(
         }
 
         var normalizedPath = httpContext.Request.Path.ToString().ToLowerInvariant();
-        var isPathRegister = config.Routes.Contains<string>(normalizedPath);
+        var isPathRegister = config.Routes.Contains(normalizedPath, StringComparer.OrdinalIgnoreCase);
         if (!isPathRegister)
         {
             logger.LogInformation(
@@ -44,7 +44,7 @@ public class DistributedResponseCachingMiddleware(
         var queryString = NormalizeQueryString(httpContext.Request.Query);
         var cacheKey = $"{normalizedPath}{queryString}";
 
-        var isPublicRoute = config.PublicRoutes.Contains<string>(normalizedPath);
+        var isPublicRoute = config.PublicRoutes.Contains(normalizedPath, StringComparer.OrdinalIgnoreCase);
         if (isPublicRoute)
         {
             if (await GetCacheValue(httpContext, redisService, cacheKey)) return;
@@ -140,7 +140,7 @@ public class DistributedResponseCachingMiddleware(
         var sortedParams = query
             .OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase)
             .SelectMany(kvp => kvp.Value, (kvp, val) =>
-                $"{kvp.Key.ToLowerInvariant()}={(val ?? string.Empty).ToLowerInvariant()}");
+                $"{kvp.Key.ToLowerInvariant()}={val ?? string.Empty}");
 
         return "?" + string.Join("&", sortedParams);
     }
