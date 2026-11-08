@@ -86,9 +86,12 @@ flowchart TD
 * **Propagación de `X-Correlation-Id` de Extremo a Extremo:** El Gateway genera o preserva el identificador de correlación en cada solicitud y lo propaga a todos los microservicios.
 * **Logging Estructurado Homogéneo:** Implementado mediante `ILogger.BeginScope` con `IncludeScopes` en **.NET 8** y `OncePerRequestFilter` + `SLF4J MDC` (`logback-spring.xml`) en **Java Spring Boot**, permitiendo rastrear los logs de una transacción a través de distintos lenguajes.
 
-### 5. Response Caching Distribuido en el Borde (`X-Cache: HIT` / `MISS`)
-* **Aislamiento de Rutas Públicas y `QueryString`:** El caché en el borde se restringe exclusivamente a rutas de lectura compartidas (`/api/v1/catalog/products`), excluyendo endpoints con datos privados por usuario (`/api/v1/orders`). La clave en Redis incorpora la ruta y el `QueryString` normalizado (`cached:/api/v1/catalog/products?category=computers`) para evitar colisiones entre filtros.
-* **Reducción de Latencia (`X-Cache: HIT`):** Si la respuesta existe en Redis dentro de la ventana de vida (`DefaultTtlSeconds: 30`), el Gateway responde directamente desde la RAM con el `Content-Type` y `Body` originales sin golpear los contenedores de `CatalogService`.
+### 5. Response Caching Distribuido en el Borde (`X-Cache: HIT` / `MISS` + *Zero-Trust Isolation*)
+* **Seguridad por Diseño (`PublicRoutes` vs. Aislamiento por Usuario `sub` + `Vary: Authorization`):**
+  * Las rutas declaradas explícitamente en `PublicRoutes` (`/api/v1/catalog/products`) comparten un único caché público en Redis.
+  * Si se habilita el caché en cualquier ruta autenticada fuera de `PublicRoutes` (ej. `/api/v1/orders`), el middleware aplica aislamiento *Zero-Trust* particionando la clave de Redis con el claim `sub` del JWT (`cached:{userId}:/api/v1/orders`) e inyectando `Vary: Authorization`, previniendo fugas de datos entre usuarios (*Cross-User Data Leak*).
+  * Los parámetros del `QueryString` se ordenan alfabéticamente y se normalizan a minúsculas (`?a=1&b=2`) para evitar duplicación de entradas cuando los filtros llegan en distinto orden.
+* **Reducción de Latencia (`X-Cache: HIT`):** Si la respuesta existe en Redis dentro de la ventana de vida (`DefaultTtlSeconds: 30`), el Gateway responde directamente desde la RAM con el `Content-Type` y `Body` originales sin golpear los contenedores downstream.
 * **Intercepción Transparente de Streams (`X-Cache: MISS`):** Si la clave no existe, el middleware intercepta el stream de respuesta de YARP mediante *MemoryStream Swapping*, almacena el payload en Redis con expiración automática (`SET key value EX ttl`) únicamente cuando el microservicio responde `200 OK`, y devuelve los bytes al cliente con resiliencia *Fail-Open*.
 
 ### 6. Resiliencia Avanzada: Timeout de Inactividad, Expulsión Pasiva de Destinos (*Outlier Detection*) y *Fallback* (`ProblemDetails`)
@@ -109,6 +112,12 @@ flowchart TD
   * **Balanceo de Carga de YARP y Sondeos de Salud (`/healthz`)** hacia los microservicios downstream.
   * **Telemetría Operativa de Redis** (comandos/seg del script Lua y *Cache Hit vs Miss Ratio*) complementada con **RedisInsight (`:5540`)** para inspección visual de claves y TTLs en desarrollo.
 
+### 8. Tests de Integración Automatizados (`Testcontainers.Redis` + `WebApplicationFactory`) y CI en GitHub Actions
+* **Entorno Efímero Real con `Testcontainers.Redis`:** El proyecto `tests/ApiGateway.IntegrationTests` levanta un contenedor real `redis:7-alpine` mediante `ICollectionFixture<ApiGatewayWebApplicationFactory>`, conectando el `IConnectionMultiplexer` de forma asíncrona antes de recibir tráfico para evitar *ThreadPool Starvation* en runners de CI de 2 vCPUs.
+* **Validación de Seguridad en Caché (*Cross-User Leak Prevention*):** Verifica automatizadamente que dos usuarios autenticados con tokens `RS256` distintos reciban respuestas aisladas al consultar `/api/v1/orders`, y que consultas al catálogo público con parámetros de `QueryString` desordenados (`?b=2&a=1` vs `?A=1&B=2`) produzcan `X-Cache: HIT`.
+* **Prueba de Fuego de Concurrencia en Lua (`Task.WhenAll`):** Dispara **50 peticiones simultáneas en paralelo** para un mismo usuario (`Free` tier, límite 5 req/10s) contra el script Lua en Redis, verificando que exactamente **5** responden `200 OK` y **45** reciben `429 Too Many Requests` sin condiciones de carrera (*Race Conditions*).
+* **Pipeline CI (`.github/workflows/ci.yml`):** Ejecuta compilación en modo `Release` y toda la suite de integración con Testcontainers en cada `push` y `pull_request`.
+
 ---
 
 ## 🛠️ Stack Tecnológico
@@ -118,6 +127,7 @@ flowchart TD
 | **API Gateway** | .NET 8 (C# 12), Microsoft YARP 2.3 | Enrutamiento inverso, Auth Offloading (`RS256`/JWKS), Caché, Balanceo, Health Checks |
 | **Estado Distribuido** | Redis 7 Alpine, StackExchange.Redis, Lua | *Sliding Window Log* (Rate Limit) y Response Caching distribuido con TTL |
 | **Observabilidad** | OpenTelemetry, Prometheus, Grafana, Redis Exporter, RedisInsight | Telemetría del Gateway y Redis (RPS, 429s, latencia p95, salud de Redis e inspección de llaves) |
+| **Testing & CI** | xUnit, WebApplicationFactory, Testcontainers.Redis, GitHub Actions | Pruebas de integración contra Redis real, concurrencia Lua y aislamiento de caché |
 | **Identidad (`AuthService`)** | Java 17, Spring Boot 4, JJWT (`0.13.0`) | Emisión de tokens JWT firmados con clave privada RSA (`RS256`) y exposición de `/.well-known/jwks.json` |
 | **Catálogo (`CatalogService`)** | .NET 8 Minimal APIs (2 Réplicas) | Microservicio de productos con soporte de alta disponibilidad |
 | **Órdenes (`OrdersService`)** | Java 17, Spring Boot 4, Lombok | Microservicio de pedidos protegido por políticas del Gateway |
@@ -129,6 +139,9 @@ flowchart TD
 
 ```text
 ApiGateway/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                  # Pipeline CI en GitHub Actions (Build + Testcontainers Integration Tests)
 ├── docker-compose.yml              # Orquestación de Gateway, Redis, Microservicios y Stack de Observabilidad
 ├── prometheus.yml                  # Configuración de scraping de Prometheus (Gateway + Redis Exporter)
 ├── monitoring/
@@ -138,18 +151,20 @@ ApiGateway/
 ├── simulate-traffic.ps1            # Simulador automatizado de escenarios de tráfico (401, HIT/MISS, 429, 504, 503)
 ├── requests.http                   # Suite de pruebas HTTP interactivas listas para ejecutar (VS Code / Rider)
 ├── README.md                       # Documentación general
-└── src/
-    ├── Gateway/
-    │   └── ApiGateway/             # API Gateway (.NET 8 + YARP + OpenTelemetry)
-    │       ├── Configuration/      # Opciones tipadas (RateLimitingOptions, ResponseCachingOptions)
-    │       ├── Middlewares/        # CorrelationId, RateLimiting, ResponseCaching y CustomResponse (Fallback)
-    │       ├── Services/           # RedisRateLimiterService y RedisResponseCachedService
-    │       ├── Program.cs          # Pipeline de seguridad, Resiliencia, Caché, OpenTelemetry y Transforms de YARP
-    │       └── appsettings.json    # Rutas, Clusters, Timeouts, Health Checks Pasivos, Caché y Tiers de Rate Limit
-    └── Services/
-        ├── AuthService/            # Microservicio Emisor de JWT (Java 17 / Spring Boot)
-        ├── CatalogService/         # Microservicio de Catálogo (.NET 8 - Escalado a 2 nodos)
-        └── OrdersService/          # Microservicio de Órdenes (Java 17 / Spring Boot)
+├── src/
+│   ├── Gateway/
+│   │   └── ApiGateway/             # API Gateway (.NET 8 + YARP + OpenTelemetry)
+│   │       ├── Configuration/      # Opciones tipadas (RateLimitingOptions, ResponseCachingOptions)
+│   │       ├── Middlewares/        # CorrelationId, RateLimiting, ResponseCaching y CustomResponse (Fallback)
+│   │       ├── Services/           # RedisRateLimiterService y RedisResponseCachedService
+│   │       ├── Program.cs          # Pipeline de seguridad, Resiliencia, Caché, OpenTelemetry y Transforms de YARP
+│   │       └── appsettings.json    # Rutas, Clusters, Timeouts, Health Checks Pasivos, Caché y Tiers de Rate Limit
+│   └── Services/
+│       ├── AuthService/            # Microservicio Emisor de JWT (Java 17 / Spring Boot)
+│       ├── CatalogService/         # Microservicio de Catálogo (.NET 8 - Escalado a 2 nodos)
+│       └── OrdersService/          # Microservicio de Órdenes (Java 17 / Spring Boot)
+└── tests/
+    └── ApiGateway.IntegrationTests/# Suite de Integración con xUnit, WebApplicationFactory y Testcontainers.Redis
 ```
 
 ---
@@ -281,15 +296,22 @@ curl -i http://localhost:5000/api/v1/orders \
 * **Prometheus (`http://localhost:9090/targets`):** Verifica que los jobs `api-gateway` (`http://api-gateway:8080/metrics`) y `redis-exporter` (`http://redis-exporter:9121/metrics`) estén en estado **`UP`**.
 * **RedisInsight (`http://localhost:5540`):** Conéctate usando `redis://default@redis:6379` para inspeccionar en tiempo real las estructuras `ZSET` del Rate Limiter (`ratelimit:sliding:...`) y las claves `STRING` del Response Cache (`cached:/api/v1/...`) junto con la cuenta regresiva de sus TTLs.
 
+### 8. Ejecutar Pruebas de Integración Automatizadas (`xUnit` + `Testcontainers`)
+Con Docker Desktop en ejecución, puedes levantar la suite completa de pruebas de integración que aprovisiona un contenedor efímero de Redis (`redis:7-alpine`) y valida el aislamiento Zero-Trust en caché y la concurrencia atómica en Lua:
+```bash
+dotnet test ApiGateway.sln --configuration Release
+```
+
 ---
 
 ## ⚖️ Decisiones de Diseño, Limitaciones Actuales y Roadmap
 
 * ***Sliding Window Log* (`ZSET`) vs. *Sliding Window Counter* (`INCR`):** Se eligió *Sliding Window Log* con `redis.call('TIME')` y miembros únicos (`timestamp:UUID`) para garantizar exactitud matemática en los bordes de ventana sin *clock skew* entre instancias del Gateway, asumiendo un costo de memoria $O(N)$ por peticiones activas en la ventana de 10s.
+* **Caché Distribuido Zero-Trust (`PublicRoutes` vs. Rutas Privadas):** Las rutas fuera de `PublicRoutes` exigen el claim `sub` del JWT para construir claves aisladas por usuario (`{userId}:{path}?{normalizedQuery}`) e inyectan `Vary: Authorization`, previniendo vulnerabilidades de *Cross-User Cache Poisoning / Data Leakage*.
 * **Expulsión Pasiva en YARP vs. *Circuit Breaker* Clásico (Polly):** Se utilizaron los *Passive Health Checks* nativos de YARP (`TransportFailureRate` + `ReactivationPeriod`) para aislar réplicas degradadas individualmente (patrón *Outlier Detection*), junto con `ActivityTimeout` para cortar inactividad en el socket.
 * **Próximas Iteraciones (Roadmap):**
-  1. **Trazas Distribuidas (`W3C Traceparent`):** Exportación de *spans* con OpenTelemetry desde .NET 8 y Micrometer Tracing desde Spring Boot hacia **Grafana Tempo / Jaeger** para complementar el actual `X-Correlation-Id` en logs y las métricas del Gateway.
-  2. **Tests de Integración y CI:** Suite automatizada con **xUnit + Testcontainers (Redis)** en **GitHub Actions** para validar concurrencia sobre el script Lua y la validación `RS256/JWKS`.
+  1. ✅ **Tests de Integración y CI (Completado en v2.0):** Suite automatizada con **xUnit + Testcontainers (Redis)** en **GitHub Actions** validando concurrencia sobre el script Lua, aislamiento Zero-Trust de caché y firma `RS256/JWKS`.
+  2. **Trazas Distribuidas (`W3C Traceparent`):** Exportación de *spans* con OpenTelemetry desde .NET 8 y Micrometer Tracing desde Spring Boot hacia **Grafana Tempo / Jaeger** para complementar el actual `X-Correlation-Id` en logs y las métricas del Gateway.
   3. **Benchmarking bajo Carga:** Pruebas de estrés con **`k6`** para medir `p95`/`p99` bajo concurrencia sostenida.
 
 ---

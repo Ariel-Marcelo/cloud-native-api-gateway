@@ -3,8 +3,8 @@ namespace ApiGateway.IntegrationTests.tests;
 using System.Net;
 using System.Net.Http.Headers;
 
+[Collection("GatewayIntegrationTests")]
 public class RateLimitingConcurrencyTests(ApiGatewayWebApplicationFactory factory)
-    : IClassFixture<ApiGatewayWebApplicationFactory>
 {
     [Fact]
     public async Task ConcurrentBurst_Of50Requests_ShouldAllowExactly5AndReject45With429()

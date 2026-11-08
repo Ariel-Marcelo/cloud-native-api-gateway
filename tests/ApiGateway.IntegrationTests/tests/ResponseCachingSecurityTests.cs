@@ -5,8 +5,8 @@ using System.Net.Http.Headers;
 using ApiGateway.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
+[Collection("GatewayIntegrationTests")]
 public class ResponseCachingSecurityTests(ApiGatewayWebApplicationFactory factory)
-    : IClassFixture<ApiGatewayWebApplicationFactory>
 {
     [Fact]
     public async Task GetOrders_WhenCached_ShouldNotLeakUserADataToUserB()
@@ -47,18 +47,18 @@ public class ResponseCachingSecurityTests(ApiGatewayWebApplicationFactory factor
         Assert.Contains("Order-Secret-Of-user-a", bodyA);
 
         Assert.Equal(HttpStatusCode.OK, responseB.StatusCode);
-        
+
         Assert.DoesNotContain("Order-Secret-Of-user-a", bodyB);
         Assert.Contains("Order-Secret-Of-user-b", bodyB);
     }
-    
+
     [Fact]
     public async Task GetCatalog_WithDifferentQueryOrderAndCase_ShouldReturnCacheHit()
     {
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", TestJwtTokenGenerator.GenerateToken("user-query-test"));
-        
+
         var response1 = await client.GetAsync("/api/v1/catalog/products?b=2&a=1");
         var response2 = await client.GetAsync("/api/v1/catalog/products?A=1&B=2");
 

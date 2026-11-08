@@ -1,8 +1,9 @@
 namespace ApiGateway.IntegrationTests;
+
 using System.Net;
 
+[Collection("GatewayIntegrationTests")]
 public class GatewaySmokeTests(ApiGatewayWebApplicationFactory factory)
-    : IClassFixture<ApiGatewayWebApplicationFactory>
 {
     [Fact]
     public async Task Healthz_ShouldReturn200Ok()
